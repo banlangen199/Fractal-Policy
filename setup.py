@@ -50,11 +50,16 @@ core_requirements = [
     "gymnasium @ git+https://git@github.com/stepjam/Gymnasium.git@0.29.2",
     "huggingface_hub",
     "moviepy==1.0.3",
-    "wandb==0.13.8",
+    # wandb 0.13.8 pulls in pathtools which imports the removed stdlib module
+    # `imp` on Python 3.12+. Keep this compatible with newer Python versions.
+    "wandb>=0.16.0",
     "plotly==5.8.0",
     "open3d==0.19.0",
     "huggingface_hub",
     "transformers==4.33.3",
+    # Torch is required at runtime but wheels are platform/python dependent.
+    "torch",
+    "torchvision",
 ]
 setup(  
     name="chain-of-action",
