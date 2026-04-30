@@ -1,0 +1,72 @@
+# @package _global_
+
+method_name: fractal
+action_sequence: ${method.action_window}
+execution_length: ${method.action_window}
+temporal_ensemble: true
+
+method:
+  _target_: src.methods.fractal.FractalPolicy
+
+  # optimization
+  lr: 1e-4
+  lr_backbone: 1e-5
+  weight_decay: 1e-4
+  num_train_steps: ${num_train_steps}
+  adaptive_lr: false
+  actor_grad_clip: 1.0
+
+  # data / behavior
+  use_lang_cond: false
+  action_order: FORWARD
+  action_mode: ${env.action_mode}
+  action_padding: zero
+  action_sequence: ${method.action_window}
+  action_window: ${method.actor_model.transformer_decoder.action_size_list.0}
+  action_stride: 1
+  mtp: false
+
+  # losses
+  loss_type: l1
+  gripper_loss_type: bce
+  gripper_loss_weight: 1.0
+
+  actor_model:
+    _target_: src.methods.fractal.ActorModel
+    _partial_: true
+
+    transformer_decoder:
+      _target_: src.methods.fractal.FractalAction
+      _partial_: true
+      dropout: ${method.actor_model.dropout}
+      action_dim: ${method.actor_model.action_dim}
+
+      # Fractal hierarchy (fine -> coarse)
+      action_size_list: [32, 16, 4, 1]
+      hidden_dim_list: [512, 512, 512, 512]
+      num_blocks_list: [3, 3, 3, 3]
+      num_heads_list: [8, 8, 8, 8]
+      generator_type_list: [ar, ar, ar]
+
+    hidden_dim: 512
+    enc_layers: 4
+    dropout: 0.1
+    nheads: 8
+    dim_feedforward: 3200
+    pre_norm: true
+    state_dim: 8
+    action_dim: 8
+    use_lang_cond: ${method.use_lang_cond}
+
+  encoder_model:
+    _target_: src.methods.fractal.ImageEncoder
+    _partial_: true
+    input_shape: [4, 3, 128, 128]
+    hidden_dim: ${method.actor_model.hidden_dim}
+    position_embedding: "sine"
+    lr_backbone: ${method.lr_backbone}
+    masks: false
+    backbone: "resnet18"
+    dilation: false
+    use_frozen_bn: true
+    use_lang_cond: ${method.use_lang_cond}

@@ -65,7 +65,9 @@ class RLBenchDataset(Dataset):
         self._nstep = 1
         self._demos = None  
         self._frame_stacks = 1
-        self._action_seq_len_max = seq_len
+        cfg_window = getattr(cfg.method, "action_window", None)
+        self._action_seq_len_max = int(cfg_window) if cfg_window is not None else seq_len
+        self._sliding_indices = None
         self.action_padding = cfg.method.action_padding
         self.traj_sample_margin = cfg.method.traj_sample_margin if cfg.method_name == "coa" else None
         
@@ -80,8 +82,27 @@ class RLBenchDataset(Dataset):
         else:
             self.last_action_correction = False
 
+    def _build_sliding_indices(self) -> None:
+        stride = getattr(self.cfg.method, "action_stride", 1)
+        if stride <= 0:
+            raise ValueError(f"action_stride must be positive, got {stride}")
+        indices = []
+        for demo_idx, demo in enumerate(self._demos):
+            actions = demo[ActionModeType[self.cfg.env.action_mode].value]
+            ep_len = len(actions)
+            for start_idx in range(0, ep_len, stride):
+                indices.append((demo_idx, start_idx))
+        self._sliding_indices = indices
+
+    def _ensure_sliding_indices(self) -> None:
+        if self._sliding_indices is None:
+            self._build_sliding_indices()
+
     def __len__(self):
         # Return the number of demos
+        if self.cfg.method_name == "fractal":
+            self._ensure_sliding_indices()
+            return len(self._sliding_indices)
         return len(self._demos)
 
     def get_observation(self, episode: dict, idx: int) -> dict:
@@ -148,6 +169,41 @@ class RLBenchDataset(Dataset):
         # Ensure the array is contiguous
         action_seq = np.ascontiguousarray(action_seq)
         
+        return action_seq, is_pad
+
+    def get_action_window(self, actions: np.ndarray, ep_len: int, idx: int) -> tuple:
+        """
+        Get a fixed-length action window starting at idx.
+
+        Args:
+            actions: all actions in the current episode
+            ep_len: length of the current episode
+            idx: window start index
+
+        Returns:
+            action_seq: processed action sequence (l, 8)
+            is_pad: padding flag array (l,)
+        """
+        action_start_idx = idx
+        action_end_idx = min(idx + self._action_seq_len_max, ep_len)
+        action_idxs = list(range(action_start_idx, action_end_idx))
+        action_seq = actions[action_idxs]
+
+        num_actions_extracted = len(action_seq)
+        num_actions_to_pad = self._action_seq_len_max - num_actions_extracted
+        is_pad = np.array([False] * num_actions_extracted + [True] * num_actions_to_pad)
+
+        if num_actions_to_pad > 0:
+            if self.action_padding == 'zero':
+                padding_shape = (num_actions_to_pad,) + action_seq.shape[1:]
+                action_padding = np.zeros(padding_shape, dtype=action_seq.dtype)
+            elif self.action_padding == 'repeat':
+                action_padding = np.tile(action_seq[-1:], (num_actions_to_pad, 1))
+            else:
+                raise ValueError(f"Unknown action_padding type: {self.action_padding}")
+            action_seq = np.concatenate([action_seq, action_padding], axis=0)
+
+        action_seq = np.ascontiguousarray(action_seq)
         return action_seq, is_pad
 
 
@@ -251,9 +307,28 @@ class RLBenchDataset(Dataset):
             
         """
 
+        if self.cfg.method_name == "fractal":
+            self._ensure_sliding_indices()
+            demo_idx, start_idx = self._sliding_indices[episode_idx]
+            episode = self._demos[demo_idx]
+            actions = episode[ActionModeType[self.cfg.env.action_mode].value]
+            ep_len = len(actions)
+
+            sample = self.get_observation(episode, start_idx)
+            action_seq, is_pad = self.get_action_window(actions, ep_len, start_idx)
+
+            sample['action'] = action_seq
+            sample['is_pad'] = is_pad
+
+            if self.cfg.method.use_lang_cond:
+                sample['desc'] = sample['desc'].squeeze(0)
+
+            del sample[ActionModeType[self.cfg.env.action_mode].value]
+            return self.convert_dtype(sample)
+
         if self.cfg.method_name == "coa":
             return self.get_sample_coa(episode_idx)
-        elif self.cfg.method_name == "act" or self.cfg.method_name == "dp":
+        elif self.cfg.method_name in ["act", "dp", "fractal"]:
             return self.get_sample(episode_idx)
         else:
             raise ValueError(f"Unknown method name: {self.cfg.method_name}")

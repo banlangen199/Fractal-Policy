@@ -321,9 +321,9 @@ class RLBenchEnv(gym.Env):
         self.action_space = spaces.Box(
             minimum, maximum, shape=maximum.shape, dtype=maximum.dtype
         )
-        if renderer == "opengl":
+        if cfg.env.renderer == "opengl":
             self.renderer = RenderMode.OPENGL
-        elif renderer == "opengl3":
+        elif cfg.env.renderer == "opengl3":
             self.renderer = RenderMode.OPENGL3
         else:
             raise ValueError(self.renderer)
@@ -517,25 +517,16 @@ class RLBenchEnvFactory(EnvFactory):
         if not demo_env:
             env = FrameStack(env, cfg.env.frame_stack)
 
-            # If action_sequenceaction_sequence length and execution length are the same, we do not
-            # use receding horizon wrapper.
-            # NOTE: for RL, action_sequence == execution_length == 1, so
-            #       RecedingHorizonControl won't be enabled.
-            if cfg.action_sequence == cfg.execution_length:
-                env = ActionSequence(
-                    env,
-                    cfg.action_sequence,
-                )
-            else:
+            if cfg.temporal_ensemble:
                 if cfg.method_name == "coa":
                     env = ReverseTemporalEnsemble(
-                    env,
-                    cfg.action_sequence,
-                    cfg.env.episode_length,
-                    cfg.execution_length,
-                    cfg.temporal_ensemble,
+                        env,
+                        cfg.action_sequence,
+                        cfg.env.episode_length,
+                        cfg.execution_length,
+                        cfg.temporal_ensemble,
                         cfg.temporal_ensemble_gain,
-                        action_order="REVERSE"
+                        action_order="REVERSE",
                     )
                 else:
                     env = TemporalEnsemble(
@@ -546,6 +537,36 @@ class RLBenchEnvFactory(EnvFactory):
                         cfg.temporal_ensemble,
                         cfg.temporal_ensemble_gain,
                     )
+            else:
+                # If action_sequence length and execution length are the same, we do not
+                # use receding horizon wrapper.
+                # NOTE: for RL, action_sequence == execution_length == 1, so
+                #       RecedingHorizonControl won't be enabled.
+                if cfg.action_sequence == cfg.execution_length:
+                    env = ActionSequence(
+                        env,
+                        cfg.action_sequence,
+                    )
+                else:
+                    if cfg.method_name == "coa":
+                        env = ReverseTemporalEnsemble(
+                            env,
+                            cfg.action_sequence,
+                            cfg.env.episode_length,
+                            cfg.execution_length,
+                            cfg.temporal_ensemble,
+                            cfg.temporal_ensemble_gain,
+                            action_order="REVERSE",
+                        )
+                    else:
+                        env = TemporalEnsemble(
+                            env,
+                            cfg.action_sequence,
+                            cfg.env.episode_length,
+                            cfg.execution_length,
+                            cfg.temporal_ensemble,
+                            cfg.temporal_ensemble_gain,
+                        )
 
         env = AppendDemoInfo(env)
         if cfg.method.use_lang_cond:

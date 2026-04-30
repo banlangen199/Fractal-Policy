@@ -27,7 +27,7 @@ import torch
 @hydra.main(config_path="../src/cfgs/", config_name="launch", version_base=None)
 def main(cfg):
     # load the checkpoint
-    checkpoint = torch.load(cfg.snapshot, map_location="cpu")
+    checkpoint = torch.load(cfg.snapshot, map_location="cpu",weights_only=False)
 
     # merge the cfg from checkpoint and the cfg from command line
     cfg_ckpt = checkpoint["config"]

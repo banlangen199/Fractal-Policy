@@ -1,0 +1,327 @@
+from __future__ import annotations
+
+from typing import Any, Optional, Tuple, Union
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.transforms as tvf
+from transformers.optimization import get_scheduler
+
+from src.methods.base import BaseMethod, BatchedActionSequence
+from src.methods.backbone import build_backbone
+from src.methods.fractal.TransformerEncoder import TransformerEncoder, TransformerEncoderLayer
+from src.methods.utils import (
+    extract_many_from_batch,
+    flatten_time_dim_into_channel_dim,
+    stack_tensor_dictionary,
+)
+
+
+class ImageEncoder(nn.Module):
+    def __init__(
+        self,
+        input_shape,
+        hidden_dim,
+        position_embedding,
+        lr_backbone,
+        masks,
+        backbone,
+        dilation,
+        use_lang_cond,
+        use_frozen_bn=False,
+    ):
+        super().__init__()
+        assert len(input_shape) == 4, f"Expected shape (View, C, H, W), but got {input_shape}"
+        self._input_shape = tuple(input_shape)
+
+        self.backbone = build_backbone(
+            hidden_dim=hidden_dim,
+            position_embedding=position_embedding,
+            lr_backbone=lr_backbone,
+            masks=masks,
+            backbone=backbone,
+            dilation=dilation,
+            use_frozen_bn=use_frozen_bn,
+        )
+        for p in self.backbone.parameters():
+            p.requires_grad = True
+
+        self.input_proj = nn.Conv2d(self.backbone.num_channels, hidden_dim, kernel_size=1)
+
+    def forward(self, x: torch.Tensor, task_emb: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, torch.Tensor]:
+        assert self._input_shape == x.shape[1:], (
+            f"expected input shape {self._input_shape} but got {x.shape[1:]}"
+        )
+
+        all_cam_features = []
+        all_cam_pos = []
+        shape = x.shape
+        for cam_id in range(self._input_shape[0]):
+            cur_x = x[:, cam_id].reshape(-1, 3, *self._input_shape[2:])
+            feat, pos = self.backbone(cur_x)
+            feat = self.input_proj(feat[0])
+            pos = pos[0]
+            all_cam_features.append(feat)
+            all_cam_pos.append(pos)
+
+        img_feat = torch.cat(all_cam_features, dim=3)
+        img_feat = img_feat.reshape(shape[0], -1, *img_feat.shape[2:])
+        pos = torch.cat(all_cam_pos, dim=3)
+        return img_feat, pos
+
+
+class ActorModel(nn.Module):
+    def __init__(
+        self,
+        transformer_decoder,
+        hidden_dim: int = 512,
+        dropout: float = 0.1,
+        nheads: int = 8,
+        dim_feedforward: int = 3200,
+        enc_layers: int = 4,
+        pre_norm: bool = True,
+        state_dim: int = 8,
+        action_dim: int = 8,
+        use_lang_cond: bool = False,
+    ):
+        super().__init__()
+
+        self.hidden_dim = hidden_dim
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.use_lang_cond = use_lang_cond
+
+        encoder_layer = TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=nheads,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation="relu",
+            norm_first=pre_norm,
+        )
+        encoder_norm = nn.LayerNorm(hidden_dim) if pre_norm else None
+        self.transformer_encoder = TransformerEncoder(
+            encoder_layer=encoder_layer,
+            num_layers=enc_layers,
+            norm=encoder_norm,
+        )
+
+        self.state_proj = nn.Linear(state_dim, hidden_dim)
+        self.state_mem_pos = nn.Parameter(torch.randn(1, 1, hidden_dim))
+
+        self.transformer_decoder = transformer_decoder()
+
+    def _build_memory(
+        self,
+        obs_feat: Tuple[torch.Tensor, torch.Tensor],
+        proprio: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        img_feat, img_pos = obs_feat
+        bs = img_feat.shape[0]
+
+        # [B, C, V, L] -> [V*L, B, C]
+        img_tokens = img_feat.flatten(2).permute(2, 0, 1)
+        img_pos_tokens = img_pos.flatten(2).permute(2, 0, 1)
+
+        # Position encoding can be shared across batch (B=1). Align it to image batch.
+        if img_pos_tokens.shape[1] != bs:
+            if img_pos_tokens.shape[1] == 1:
+                img_pos_tokens = img_pos_tokens.expand(-1, bs, -1)
+            else:
+                raise ValueError(
+                    f"Position token batch mismatch: pos batch={img_pos_tokens.shape[1]}, expected {bs}."
+                )
+
+        if proprio.ndim == 3:
+            proprio = proprio[:, 0, :]
+        state_token = self.state_proj(proprio).unsqueeze(0)
+
+        src = torch.cat([img_tokens, state_token], dim=0)
+        mem_pos = torch.cat([img_pos_tokens, self.state_mem_pos.expand(1, bs, -1)], dim=0)
+        encoded = self.transformer_encoder(src, pos=mem_pos)
+
+        # batch-first memory for fractal decoder cross-attention
+        memory = encoded.permute(1, 0, 2)
+        mem_pos = mem_pos.permute(1, 0, 2)
+        return memory, mem_pos
+
+    def forward(
+        self,
+        obs_feat: Tuple[torch.Tensor, torch.Tensor],
+        proprio: torch.Tensor,
+        task_embed: Optional[torch.Tensor] = None,
+        actions: Optional[torch.Tensor] = None,
+        training: bool = True,
+    ) -> torch.Tensor:
+        memory, mem_pos = self._build_memory(obs_feat, proprio)
+        if training:
+            print("Training mode: using provided actions for teacher forcing.")
+            actions = self.transformer_decoder(
+                memory=memory,
+                mem_pos=mem_pos,
+                actions=actions,
+            )
+        else: 
+            print("Sampling mode: ignoring provided actions and generating autoregressively.")
+            actions = self.transformer_decoder.sample(
+            memory=memory,
+            mem_pos=mem_pos,
+        )
+        return actions
+
+class FractalPolicy(BaseMethod):
+    def __init__(
+        self,
+        encoder_model,
+        actor_model,
+        lr,
+        lr_backbone,
+        num_train_steps,
+        adaptive_lr,
+        weight_decay,
+        use_lang_cond,
+        action_order,
+        action_mode,
+        loss_type,
+        gripper_loss_type,
+        gripper_loss_weight,
+        actor_grad_clip,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.lr = lr
+        self.lr_backbone = lr_backbone
+        self.adaptive_lr = adaptive_lr
+        self.weight_decay = weight_decay
+        self.num_train_steps = num_train_steps
+        self.use_lang_cond = use_lang_cond
+        self.action_order = action_order
+        self.action_mode = action_mode
+        self.loss_type = loss_type
+        self.gripper_loss_type = gripper_loss_type
+        self.gripper_loss_weight = gripper_loss_weight
+        self.actor_grad_clip = actor_grad_clip
+
+        self.device = self.accelerator.device if self.accelerator else torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+
+        self.encoder_model = encoder_model()
+        self.actor_model = actor_model()
+        self.encoder_model = self.encoder_model.to(self.device)
+        self.actor_model = self.actor_model.to(self.device)
+
+        visual_obs_mean = [0.485, 0.456, 0.406]
+        visual_obs_std = [0.229, 0.224, 0.225]
+        self.img_normalizer = tvf.Normalize(mean=visual_obs_mean, std=visual_obs_std)
+
+        param_dicts = [
+            {
+                "params": [
+                    p
+                    for n, p in self.named_parameters()
+                    if "backbone" not in n and p.requires_grad
+                ]
+            },
+            {
+                "params": [
+                    p
+                    for n, p in self.named_parameters()
+                    if "backbone" in n and p.requires_grad
+                ],
+                "lr": self.lr_backbone,
+            },
+        ]
+        self.opt = torch.optim.AdamW(param_dicts, lr=self.lr, weight_decay=self.weight_decay)
+
+        if self.adaptive_lr:
+            self.lr_scheduler = get_scheduler(
+                name="cosine",
+                optimizer=self.opt,
+                num_warmup_steps=100,
+                num_training_steps=self.num_train_steps,
+            )
+
+        self.prepare_accelerator()
+
+    def training_mode(self, training: bool = True):
+        if training:
+            self.encoder_model.train()
+            self.actor_model.train()
+        else:
+            self.encoder_model.eval()
+            self.actor_model.eval()
+
+    def forward(
+        self,
+        batch_input: dict[str, torch.Tensor],
+        training: bool = True,
+    ) -> Union[BatchedActionSequence, Tuple[Any, ...]]:
+        raw_img = extract_many_from_batch(batch_input, "rgb")
+        img = flatten_time_dim_into_channel_dim(stack_tensor_dictionary(raw_img, dim=1))
+        proprio = batch_input["low_dim_state"]
+
+        if training:
+            a_gt = batch_input["action"]
+            is_pad = batch_input["is_pad"]
+        else:
+            a_gt = None
+            is_pad = None
+
+        task_emb = batch_input.get("task_emb", None)
+
+        img = self.img_normalizer(img / 255.0)
+        obs_feat = self.encoder_model(img, task_emb)
+        a_hat = self.actor_model(
+            obs_feat,
+            proprio,
+            task_emb,
+            actions=a_gt,
+            training=training,
+        )
+        return a_hat, a_gt, is_pad
+
+    @torch.no_grad()
+    def act(self, batch_input: dict[str, torch.Tensor]) -> BatchedActionSequence:
+        self.training_mode(training=False)
+        a_hat, _, _ = self.forward(batch_input, training=False)
+        return a_hat
+
+    def _compute_loss(self, batch_input: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        a_hat, a_gt, is_pad = self.forward(batch_input, training=True)
+        if a_gt is None or is_pad is None:
+            raise ValueError("Ground truth actions and is_pad are required in training mode.")
+        if self.loss_type == "l1":
+            action_loss = F.l1_loss(a_hat, a_gt, reduction="none")
+        elif self.loss_type == "mse":
+            action_loss = F.mse_loss(a_hat, a_gt, reduction="none")
+        else:
+            raise ValueError(f"Unknown loss_type: {self.loss_type}")
+        action_loss = action_loss * ~is_pad.unsqueeze(-1)
+
+        loss_dict = {
+            "action_loss": action_loss.sum() / (action_loss != 0).sum(),
+            "traj_loss": action_loss[:, 1:, :].sum() / (action_loss[:, 1:, :] != 0).sum(),
+            "traj_pos_loss": action_loss[:, 1:, :3].sum() / (action_loss[:, 1:, :3] != 0).sum(),
+            "traj_ori_loss": action_loss[:, 1:, 3:7].sum() / (action_loss[:, 1:, 3:7] != 0).sum(),
+            "traj_gripper_loss": action_loss[:, 1:, -1].sum() / (action_loss[:, 1:, -1] != 0).sum(),
+        }
+        total_loss = loss_dict["action_loss"]
+        return total_loss, loss_dict
+
+    def update(self, batch_input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        self.training_mode(training=True)
+        total_loss, loss_dict = self._compute_loss(batch_input)
+        total_loss = torch.nan_to_num(total_loss, nan=0.0, posinf=100.0, neginf=-100.0)
+
+        self.opt.zero_grad(set_to_none=True)
+        self.accelerator.backward(total_loss)
+        if self.actor_grad_clip:
+            torch.nn.utils.clip_grad_norm_(self.parameters(), self.actor_grad_clip)
+        self.opt.step()
+        if hasattr(self, "lr_scheduler"):
+            self.lr_scheduler.step()
+
+        return {k: v.detach() for k, v in loss_dict.items()}
