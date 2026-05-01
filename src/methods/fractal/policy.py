@@ -156,19 +156,21 @@ class ActorModel(nn.Module):
     ) -> torch.Tensor:
         memory, mem_pos = self._build_memory(obs_feat, proprio)
         if training:
-            print("Training mode: using provided actions for teacher forcing.")
-            actions = self.transformer_decoder(
+            # print("Training mode: using provided actions for teacher forcing.")
+            actions,latent_losses = self.transformer_decoder(
                 memory=memory,
                 mem_pos=mem_pos,
                 actions=actions,
             )
         else: 
-            print("Sampling mode: ignoring provided actions and generating autoregressively.")
+            # print("Sampling mode: ignoring provided actions and generating autoregressively.")
             actions = self.transformer_decoder.sample(
             memory=memory,
             mem_pos=mem_pos,
-        )
-        return actions
+            )
+            latent_losses = None
+
+        return actions,latent_losses
 
 class FractalPolicy(BaseMethod):
     def __init__(
@@ -274,25 +276,25 @@ class FractalPolicy(BaseMethod):
 
         img = self.img_normalizer(img / 255.0)
         obs_feat = self.encoder_model(img, task_emb)
-        a_hat = self.actor_model(
+        a_hat, latent_losses = self.actor_model(
             obs_feat,
             proprio,
             task_emb,
             actions=a_gt,
             training=training,
         )
-        return a_hat, a_gt, is_pad
+        return a_hat, a_gt, is_pad, latent_losses
 
     @torch.no_grad()
     def act(self, batch_input: dict[str, torch.Tensor]) -> BatchedActionSequence:
         self.training_mode(training=False)
-        a_hat, _, _ = self.forward(batch_input, training=False)
+        a_hat, _, _ , _ = self.forward(batch_input, training=False)
         return a_hat
 
     def _compute_loss(self, batch_input: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        a_hat, a_gt, is_pad = self.forward(batch_input, training=True)
-        if a_gt is None or is_pad is None:
-            raise ValueError("Ground truth actions and is_pad are required in training mode.")
+        a_hat, a_gt, is_pad, latent_losses = self.forward(batch_input, training=True)
+        if a_gt is None or is_pad is None or latent_losses is None:
+            raise ValueError("Ground truth actions, is_pad, latent_losses are required in training mode.")
         if self.loss_type == "l1":
             action_loss = F.l1_loss(a_hat, a_gt, reduction="none")
         elif self.loss_type == "mse":
@@ -301,6 +303,7 @@ class FractalPolicy(BaseMethod):
             raise ValueError(f"Unknown loss_type: {self.loss_type}")
         action_loss = action_loss * ~is_pad.unsqueeze(-1)
 
+
         loss_dict = {
             "action_loss": action_loss.sum() / (action_loss != 0).sum(),
             "traj_loss": action_loss[:, 1:, :].sum() / (action_loss[:, 1:, :] != 0).sum(),
@@ -308,7 +311,20 @@ class FractalPolicy(BaseMethod):
             "traj_ori_loss": action_loss[:, 1:, 3:7].sum() / (action_loss[:, 1:, 3:7] != 0).sum(),
             "traj_gripper_loss": action_loss[:, 1:, -1].sum() / (action_loss[:, 1:, -1] != 0).sum(),
         }
-        total_loss = loss_dict["action_loss"]
+
+        #TODO 这里逻辑不知道是否正确
+        per_level = []
+        for i, l in enumerate(latent_losses):
+            if l is None:
+                continue
+            l_scalar = l.mean()  # l 可能是 [B, seq_len, H] 或 [B, seq_len]
+            loss_dict[f"latent_loss_l{i}"] = l_scalar
+            per_level.append(l_scalar)
+        if per_level:
+            latent_total = sum(per_level) / len(per_level)
+            loss_dict["latent_loss"] = latent_total
+
+        total_loss = loss_dict["action_loss"] + loss_dict["latent_loss"]
         return total_loss, loss_dict
 
     def update(self, batch_input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -324,4 +340,7 @@ class FractalPolicy(BaseMethod):
         if hasattr(self, "lr_scheduler"):
             self.lr_scheduler.step()
 
-        return {k: v.detach() for k, v in loss_dict.items()}
+        return {
+            "total_loss": total_loss.detach(),
+            **{k: v.detach() for k, v in loss_dict.items()}
+        }

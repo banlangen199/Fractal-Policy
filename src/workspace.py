@@ -120,6 +120,15 @@ class Workspace:
 
         # initialize the agent and load the agent from snapshot if snapshot is provided
         self.agent = hydra.utils.instantiate(cfg.method, accelerator=self.accelerator)    
+
+        def _count_params(module):
+            total = sum(p.numel() for p in module.parameters())
+            trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
+            return total, trainable
+
+        total, trainable = _count_params(self.agent)
+        print(f"Total params: {total:,} | Trainable: {trainable:,}")
+        
         if cfg.snapshot is not None:
             self.load_snapshot(cfg.snapshot)
             

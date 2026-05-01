@@ -46,10 +46,11 @@ class ActionHead(nn.Module):
         memory: torch.Tensor,
         mem_pos: Optional[torch.Tensor],
         cond_list: Any,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, list[torch.Tensor]]:
         pred = self.cond_to_action(cond_list[0])
-        return pred.view(actions.shape[0], actions.shape[1], self.action_dim)
-    
+        latent_loss = torch.tensor(0.0, device=pred.device)
+        return pred.view(actions.shape[0], actions.shape[1], self.action_dim), [latent_loss]
+
     def sample(
         self,
         memory: torch.Tensor,

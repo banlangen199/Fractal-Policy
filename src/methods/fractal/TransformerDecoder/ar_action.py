@@ -367,11 +367,29 @@ class ARActionGenerator(nn.Module):
             mem_pos=mem_pos,
         )
 
+        #latent_loss
+        sub_chunks_feat = self._chunk_to_feat(sub_chunks)
+        target=sub_chunks_feat.detach()
+        
+
+        #TODO: make loss type configurable
+        loss_type='l1'
+        if loss_type=='mse':
+            latent_loss=F.mse_loss(cond_list_next[0], target, reduction='none')
+        elif loss_type=='cosine':
+            latent_loss=1 - F.cosine_similarity(cond_list_next[0], target, dim=-1)
+        elif loss_type=='l1':
+            latent_loss=F.l1_loss(cond_list_next[0], target, reduction='none')
+        else:
+            raise ValueError(f"Unsupported loss_type={loss_type}")
+
+
         # Pass all sub-chunks recursively: [B, seq_len, sub_trunk_size, D] -> [B*seq_len, sub_trunk_size, D]
         actions = sub_chunks.reshape(b * self.seq_len, sub_chunk_size, d)
         cond_list_next = [c.reshape(b * self.seq_len, -1) for c in cond_list_next]
-        aux_loss = actions.new_zeros(())
-        return actions, cond_list_next, aux_loss
+
+
+        return actions, cond_list_next, latent_loss
 
     def sample(
         self,

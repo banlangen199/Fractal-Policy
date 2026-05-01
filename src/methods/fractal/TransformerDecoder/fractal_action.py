@@ -102,17 +102,21 @@ class FractalAction(nn.Module):
             root_cond = self.sos_embedding[:, 0, :].expand(batch_size, -1)
             cond_list = [root_cond for _ in range(5)]
 
-        actions, cond_list, loss=self.generator(
+        actions, next_cond_list, latent_loss=self.generator(
             actions=actions,
             cond_list=cond_list,
             memory=memory,
             mem_pos=mem_pos,
         )
-        pred_actions=self.next_fractal(actions=actions, cond_list=cond_list, memory=memory, mem_pos=mem_pos)
+
+        pred_actions,child_loss=self.next_fractal(actions=actions, cond_list=next_cond_list, memory=memory, mem_pos=mem_pos)
+        
 
         if pred_actions.ndim == 2:
             pred_actions = pred_actions.unsqueeze(1)
-        return pred_actions.reshape(batch_size, self.current_len, self.action_dim)
+        
+        latent_losses = [latent_loss] + child_loss
+        return pred_actions.reshape(batch_size, self.current_len, self.action_dim), latent_losses
 
     def sample(
         self,
