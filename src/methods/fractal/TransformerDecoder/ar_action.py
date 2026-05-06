@@ -368,10 +368,9 @@ class ARActionGenerator(nn.Module):
         )
 
         #latent_loss
-        sub_chunks_feat = self._chunk_to_feat(sub_chunks)
-        target=sub_chunks_feat.detach()
-        
+        target = self._chunk_to_feat(sub_chunks)
 
+        # target=sub_chunks_feat.detach()
         #TODO: make loss type configurable
         loss_type='l1'
         if loss_type=='mse':
