@@ -415,7 +415,7 @@ class ARActionGenerator(nn.Module):
             dtype=memory.dtype,
         )
 
-        num_steps = self.seq_len if num_iter is None else min(self.seq_len, max(1, int(num_iter)))
+        num_steps = self.seq_len 
         self._setup_kv_cache(max_batch_size=b, max_seq_length=num_steps, device=memory.device, dtype=memory.dtype)
         try:
             for step in range(num_steps):

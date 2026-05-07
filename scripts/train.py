@@ -55,4 +55,4 @@ if __name__ == "__main__":
 # CUDA_VISIBLE_DEVICES=4 xvfb-run -a -s "-screen 0 1920x1080x24" python scripts/eval.py task=pick_up_cup env.renderer=opengl3 snapshot=coa/rlbench_pick_up_cup_20250702080155/checkpoints/rlbench_pick_up_cup_20250702080155_coa_20000.pt
 
 # CUDA_VISIBLE_DEVICES=6 xvfb-run -a -s "-screen 0 1920x1080x24" python scripts/train.py task=turn_tap method=fractal env.renderer=opengl3
-# xvfb-run -a -s "-screen 0 1920x1080x24" python scripts/eval.py task=turn_tap snapshot=/mnt/data/txc/Chain-of-Action/exp_local/fractal/rlbench_turn_tap_20260428124920/checkpoints/fractal_10000.pt method=Fractal env.renderer=opengl3
+# CUDA_VISIBLE_DEVICES=7 xvfb-run -a -s "-screen 0 1920x1080x24" python scripts/eval.py task=turn_tap snapshot=exp_local/fractal/train_turn_tap_20260506094943/checkpoints/fractal_20000.pt method=fractal env.renderer=opengl3
