@@ -293,6 +293,71 @@ class FractalPolicy(BaseMethod):
         a_hat, _, _ , _ = self.forward(batch_input, training=False)
         return a_hat
 
+    def validate(
+        self,
+        batch_input: dict[str, torch.Tensor],
+        use_generated_actions: bool = True,
+    ) -> dict[str, torch.Tensor]:
+        """
+        Offline validation on demonstration data.
+
+        use_generated_actions=True:
+            Use the sampling/autoregressive path:
+                obs_t -> generated action sequence -> compare with GT
+
+        use_generated_actions=False:
+            Use teacher-forcing path:
+                obs_t + GT actions -> predicted actions -> compare with GT
+        """
+        self.training_mode(training=False)
+
+        a_gt = batch_input["action"]
+        is_pad = batch_input["is_pad"]
+
+        if use_generated_actions:
+            # Real generated sequence validation.
+            # This matches evaluation behavior more closely.
+            a_hat = self.act(batch_input)
+        else:
+            # Teacher-forcing validation.
+            # This checks supervised prediction quality without autoregressive error accumulation.
+            a_hat, a_gt, is_pad, _ = self.forward(
+                batch_input,
+                training=True,
+            )
+
+        if self.loss_type == "l1":
+            raw_action_loss = F.l1_loss(a_hat, a_gt, reduction="none")
+        elif self.loss_type == "mse":
+            raw_action_loss = F.mse_loss(a_hat, a_gt, reduction="none")
+        else:
+            raise ValueError(f"Unknown loss_type: {self.loss_type}")
+
+        # is_pad: [B, T]
+        # True  = padding timestep, ignored
+        # False = valid timestep
+        valid = (~is_pad.bool()).unsqueeze(-1).expand_as(raw_action_loss)
+        action_loss = raw_action_loss.masked_fill(~valid, 0.0)
+
+        def masked_mean(loss: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+            return loss.sum() / mask.sum().clamp_min(1)
+
+        metrics = {
+            "action_loss": masked_mean(action_loss, valid),
+            "traj_loss": masked_mean(action_loss[:, 1:, :], valid[:, 1:, :]),
+            "pos_loss": masked_mean(action_loss[:, 1:, :3], valid[:, 1:, :3]),
+            "ori_loss": masked_mean(action_loss[:, 1:, 3:7], valid[:, 1:, 3:7]),
+            "gripper_loss": masked_mean(action_loss[:, 1:, -1], valid[:, 1:, -1]),
+
+            # First action is important because execution usually starts from the first few actions.
+            "first_action_loss": masked_mean(action_loss[:, :1, :], valid[:, :1, :]),
+            "first_pos_loss": masked_mean(action_loss[:, :1, :3], valid[:, :1, :3]),
+            "first_ori_loss": masked_mean(action_loss[:, :1, 3:7], valid[:, :1, 3:7]),
+            "first_gripper_loss": masked_mean(action_loss[:, :1, -1], valid[:, :1, -1]),
+        }
+
+        return metrics
+
     def _compute_loss(self, batch_input: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         a_hat, a_gt, is_pad, latent_losses = self.forward(batch_input, training=True)
         if a_gt is None or is_pad is None or latent_losses is None:

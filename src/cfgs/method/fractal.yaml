@@ -2,7 +2,7 @@
 
 method_name: fractal
 action_sequence: ${method.action_window}
-execution_length: 2
+execution_length: 1
 temporal_ensemble: true
 
 method:

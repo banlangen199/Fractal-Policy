@@ -118,6 +118,28 @@ class Workspace:
                 pin_memory=True,   
             )
 
+            # Offline validation dataset.
+            # Use eval/test demos from dataset_root_eval.
+            self.dataset_val = RLBenchDataset(cfg, seq_len=action_sequence_train)
+            setattr(self.dataset_val, "_demos", vis_demos)
+
+            val_batch_size = int(cfg.get("val_batch_size", cfg.batch_size))
+            val_batches = int(cfg.get("val_batches", 10))
+
+            val_sampler = RandomSampler(
+                self.dataset_val,
+                replacement=True,
+                num_samples=val_batch_size * val_batches,
+            )
+
+            self.dataloader_val = DataLoader(
+                self.dataset_val,
+                batch_size=val_batch_size,
+                sampler=val_sampler,
+                num_workers=0,
+                pin_memory=True,
+            )
+
         # initialize the agent and load the agent from snapshot if snapshot is provided
         self.agent = hydra.utils.instantiate(cfg.method, accelerator=self.accelerator)    
 
@@ -140,6 +162,58 @@ class Workspace:
     def _get_next_batch(self):
         batch = next(iter(self.dataloader))
         return batch, self.dataloader
+
+    def offline_validate(self) -> Dict[str, Any]:
+        """
+        Validate generated action sequences against GT action sequences
+        on eval/test demonstrations, without simulator rollout.
+        """
+        if not hasattr(self.agent, "validate"):
+            raise AttributeError(
+                f"{self.cfg.method_name} does not implement validate(). "
+                "Please add a validate() method to the method class."
+            )
+
+        val_batches = int(self.cfg.get("val_batches", 10))
+        use_generated_actions = bool(self.cfg.get("val_use_generated_actions", True))
+
+        metric_sums = {}
+        num_batches = 0
+
+        self.agent.training_mode(training=False)
+
+        with torch.no_grad():
+            for i, batch in enumerate(self.dataloader_val):
+                if i >= val_batches:
+                    break
+
+                batch = {
+                    k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
+
+                metrics = self.agent.validate(
+                    batch,
+                    use_generated_actions=use_generated_actions,
+                )
+
+                for k, v in metrics.items():
+                    if isinstance(v, torch.Tensor):
+                        v = v.detach()
+                    metric_sums[k] = metric_sums.get(k, 0.0) + v
+
+                num_batches += 1
+
+        # Return model to train mode for safety.
+        self.agent.training_mode(training=True)
+
+        if num_batches == 0:
+            return {}
+
+        return {
+            k: v / num_batches
+            for k, v in metric_sums.items()
+        }
 
 
     def loop(self):
@@ -174,6 +248,21 @@ class Workspace:
             # if  self._current_step % self.cfg.vis_every_steps == 0:
             #     updated_metrics = self.vis()
             #     self.logger.log_metrics(updated_metrics, step=self._current_step)
+
+            val_every_steps = int(self.cfg.get("val_every_steps", 0))
+            if val_every_steps > 0 and self._current_step % val_every_steps == 0:
+                val_metrics = self.offline_validate()
+                self.logger.log_metrics(
+                    val_metrics,
+                    step=self._current_step,
+                    prefix="val",
+                )
+
+                if "action_loss" in val_metrics:
+                    val_loss = val_metrics["action_loss"]
+                    if hasattr(val_loss, "item"):
+                        val_loss = val_loss.item()
+                    print(f"Step {self._current_step}/{num_train_steps}, Val Action Loss: {val_loss:.4f}")
 
             if self._current_step % self.cfg.eval_every_steps == 0:
                 updated_metrics = self.eval()

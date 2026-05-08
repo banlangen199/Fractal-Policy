@@ -8,7 +8,7 @@ defaults:
 
 # Universal settings
 num_train_steps: 20000
-eval_every_steps: 10000
+eval_every_steps: 99999
 vis_every_steps: 2000
 save_every_steps: 10000
 num_eval_episodes: 25
@@ -17,9 +17,17 @@ snapshot: null
 tag: null
 exp_root: .
 
+# Offline validation settings
+val_every_steps: 1000
+val_batches: 5
+val_batch_size: ${batch_size}
+
+# true:  obs -> model generated actions -> compare with GT
+# false: teacher-forcing validation loss
+val_use_generated_actions: true
 
 # dataloader settings
-batch_size: 256
+batch_size: 128
 num_workers: 0
 pin_memory: true
 persistent_workers: true
