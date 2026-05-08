@@ -303,15 +303,23 @@ class FractalPolicy(BaseMethod):
             action_loss = F.mse_loss(a_hat, a_gt, reduction="none")
         else:
             raise ValueError(f"Unknown loss_type: {self.loss_type}")
-        action_loss = action_loss * ~is_pad.unsqueeze(-1)
 
+        # is_pad: [B, T]
+        # True  = padding, should be ignored
+        # False = valid action
+        valid = (~is_pad.bool()).unsqueeze(-1).expand_as(action_loss)
+
+        action_loss = action_loss.masked_fill(~valid, 0.0)
+
+        def masked_mean(loss: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+            return loss.sum() / mask.sum().clamp_min(1)
 
         loss_dict = {
-            "action_loss": action_loss.sum() / (action_loss != 0).sum(),
-            "traj_loss": action_loss[:, 1:, :].sum() / (action_loss[:, 1:, :] != 0).sum(),
-            "traj_pos_loss": action_loss[:, 1:, :3].sum() / (action_loss[:, 1:, :3] != 0).sum(),
-            "traj_ori_loss": action_loss[:, 1:, 3:7].sum() / (action_loss[:, 1:, 3:7] != 0).sum(),
-            "traj_gripper_loss": action_loss[:, 1:, -1].sum() / (action_loss[:, 1:, -1] != 0).sum(),
+            "action_loss": masked_mean(action_loss, valid),
+            "traj_loss": masked_mean(action_loss[:, 1:, :], valid[:, 1:, :]),
+            "traj_pos_loss": masked_mean(action_loss[:, 1:, :3], valid[:, 1:, :3]),
+            "traj_ori_loss": masked_mean(action_loss[:, 1:, 3:7], valid[:, 1:, 3:7]),
+            "traj_gripper_loss": masked_mean(action_loss[:, 1:, -1], valid[:, 1:, -1]),
         }
 
         #TODO 这里逻辑不知道是否正确
