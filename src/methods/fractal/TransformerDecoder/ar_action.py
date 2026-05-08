@@ -181,6 +181,7 @@ class ARActionGenerator(nn.Module):
         cond_dim: int,
         dropout: float,
         action_dim: int = 8,
+        latent_loss_type: str = "l1",
     ):
         super().__init__()
         self.seq_len = seq_len
@@ -188,6 +189,7 @@ class ARActionGenerator(nn.Module):
         self.hidden_dim = hidden_dim
         self.action_dim = action_dim
         self.cond_dim = cond_dim
+        self.latent_loss_type = latent_loss_type
 
         self.cond_proj = nn.Linear(cond_dim, hidden_dim)
         self.chunk_flat_proj = nn.Linear(sub_trunk_size * action_dim, hidden_dim)
@@ -368,11 +370,11 @@ class ARActionGenerator(nn.Module):
         )
 
         #latent_loss
-        target = self._chunk_to_feat(sub_chunks)
+        sub_chunks_feat = self._chunk_to_feat(sub_chunks)
+        target=sub_chunks_feat.detach()
 
-        # target=sub_chunks_feat.detach()
-        #TODO: make loss type configurable
-        loss_type='l1'
+        loss_type=self.latent_loss_type
+        
         if loss_type=='mse':
             latent_loss=F.mse_loss(cond_list_next[0], target, reduction='none')
         elif loss_type=='cosine':

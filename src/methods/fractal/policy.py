@@ -84,6 +84,7 @@ class ActorModel(nn.Module):
         state_dim: int = 8,
         action_dim: int = 8,
         use_lang_cond: bool = False,
+        latent_loss_type: str = "l1",
     ):
         super().__init__()
 
@@ -110,7 +111,9 @@ class ActorModel(nn.Module):
         self.state_proj = nn.Linear(state_dim, hidden_dim)
         self.state_mem_pos = nn.Parameter(torch.randn(1, 1, hidden_dim))
 
-        self.transformer_decoder = transformer_decoder()
+        self.transformer_decoder = transformer_decoder(
+            latent_loss_type=latent_loss_type
+            )
 
     def _build_memory(
         self,
@@ -186,8 +189,7 @@ class FractalPolicy(BaseMethod):
         action_order,
         action_mode,
         loss_type,
-        gripper_loss_type,
-        gripper_loss_weight,
+        latent_loss_type,
         actor_grad_clip,
         *args,
         **kwargs,
@@ -202,8 +204,6 @@ class FractalPolicy(BaseMethod):
         self.action_order = action_order
         self.action_mode = action_mode
         self.loss_type = loss_type
-        self.gripper_loss_type = gripper_loss_type
-        self.gripper_loss_weight = gripper_loss_weight
         self.actor_grad_clip = actor_grad_clip
 
         self.device = self.accelerator.device if self.accelerator else torch.device(
@@ -211,7 +211,9 @@ class FractalPolicy(BaseMethod):
         )
 
         self.encoder_model = encoder_model()
-        self.actor_model = actor_model()
+        self.actor_model = actor_model(
+            latent_loss_type=latent_loss_type
+            )
         self.encoder_model = self.encoder_model.to(self.device)
         self.actor_model = self.actor_model.to(self.device)
 

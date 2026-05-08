@@ -28,8 +28,7 @@ method:
 
   # losses
   loss_type: l1
-  gripper_loss_type: bce
-  gripper_loss_weight: 1.0
+  latent_loss_type: l1
 
   actor_model:
     _target_: src.methods.fractal.ActorModel

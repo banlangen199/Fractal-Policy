@@ -100,9 +100,9 @@ class RLBenchDataset(Dataset):
 
     def __len__(self):
         # Return the number of demos
-        if self.cfg.method_name == "fractal":
-            self._ensure_sliding_indices()
-            return len(self._sliding_indices)
+        # if self.cfg.method_name == "fractal":
+        #     self._ensure_sliding_indices()
+        #     return len(self._sliding_indices)
         return len(self._demos)
 
     def get_observation(self, episode: dict, idx: int) -> dict:
