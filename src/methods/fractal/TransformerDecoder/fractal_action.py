@@ -121,6 +121,7 @@ class FractalAction(nn.Module):
         latent_losses = [latent_loss] + child_loss
         return pred_actions.reshape(batch_size, self.current_len, self.action_dim), latent_losses
 
+    
     def sample(
         self,
         memory: torch.Tensor,
@@ -168,7 +169,102 @@ class FractalAction(nn.Module):
             filter_threshold=filter_threshold,
             next_level_sample_fn=next_level_sample_function,
         )
-       
+    
+    def levelwise_sample(
+        self,
+        memory: torch.Tensor,
+        mem_pos: Optional[torch.Tensor],
+        cond_list: torch.Tensor = None,
+        num_iter_list: Optional[list[int]] = None,
+        cfg: float = 1.0,
+        cfg_schedule: str = "constant",
+        temperature: float = 1.0,
+        filter_threshold: float = 0.0,
+    ):
+        """
+        Level-wise sampling.
+
+        Different from sample():
+
+        sample():
+            depth-first recursive generation.
+
+        levelwise_sample():
+            current level first generates all next-level conditions,
+            then passes the whole condition sequence to the next level.
+        """
+        del num_iter_list
+
+        if self.fractal_level == 0:
+            batch_size = memory.shape[0]
+            root_cond = self.sos_embedding[:, 0, :].expand(batch_size, -1)
+            cond_list = [root_cond for _ in range(5)]
+
+        if not hasattr(self.generator, "sample_cond_sequence"):
+            raise NotImplementedError(
+                f"levelwise_sample currently requires ARActionGenerator, "
+                f"but got {type(self.generator)}"
+            )
+
+        # 1. Current level generates all next-level condition tokens first.
+        # next_cond_seq: [B, seq_len, hidden_dim]
+        next_cond_seq = self.generator.sample_cond_sequence(
+            memory=memory,
+            mem_pos=mem_pos,
+            cond_list=cond_list,
+            cfg=cfg,
+            cfg_schedule=cfg_schedule,
+            temperature=temperature,
+            filter_threshold=filter_threshold,
+        )
+
+        batch_size, seq_len, hidden_dim = next_cond_seq.shape
+
+        # 2. Flatten [B, seq_len, H] -> [B * seq_len, H],
+        # matching the training forward path.
+        next_cond_flat = next_cond_seq.reshape(batch_size * seq_len, hidden_dim)
+        next_cond_list = [next_cond_flat]
+
+        # 3. Send the whole generated condition batch to the next level.
+        if isinstance(self.next_fractal, FractalAction):
+            child_actions = self.next_fractal.levelwise_sample(
+                memory=memory,
+                mem_pos=mem_pos,
+                cond_list=next_cond_list,
+                num_iter_list=None,
+                cfg=cfg,
+                cfg_schedule=cfg_schedule,
+                temperature=temperature,
+                filter_threshold=filter_threshold,
+            )
+        else:
+            # Leaf ActionHead.
+            child_actions = self.next_fractal.sample(
+                memory=memory,
+                mem_pos=mem_pos,
+                cond_list=next_cond_list,
+                cfg=cfg,
+                cfg_schedule=cfg_schedule,
+                temperature=temperature,
+                filter_threshold=filter_threshold,
+            )
+
+        if child_actions.ndim == 2:
+            child_actions = child_actions.unsqueeze(1)
+
+        # child_actions shape:
+        #   [B * seq_len, sub_trunk_size, action_dim]
+        #
+        # reshape back to:
+        #   [B, seq_len * sub_trunk_size, action_dim]
+        pred_actions = child_actions.reshape(
+            batch_size,
+            seq_len * child_actions.shape[1],
+            self.action_dim,
+        )
+
+        return pred_actions
+
 
 if __name__ == "__main__":
     # Quick test to verify the model can run without errors

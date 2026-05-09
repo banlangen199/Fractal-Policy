@@ -25,6 +25,7 @@ val_batch_size: ${batch_size}
 # true:  obs -> model generated actions -> compare with GT
 # false: teacher-forcing validation loss
 val_use_generated_actions: true
+val_sample_mode: levelwise   # depth_first | levelwise
 
 # dataloader settings
 batch_size: 128

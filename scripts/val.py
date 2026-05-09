@@ -80,6 +80,7 @@ def main(cfg):
     val_batches = cfg.get("val_batches", 10)
     val_batch_size = cfg.get("val_batch_size", cfg.batch_size)
     val_use_generated_actions = cfg.get("val_use_generated_actions", True)
+    val_sample_mode = cfg.get("val_sample_mode", "depth_first")
 
     # Merge checkpoint model config into current run config.
     # Similar to scripts/eval.py: use ckpt method/method_name/action_sequence,
@@ -98,6 +99,7 @@ def main(cfg):
         cfg.val_batches = val_batches
         cfg.val_batch_size = val_batch_size
         cfg.val_use_generated_actions = val_use_generated_actions
+        cfg.val_sample_mode = val_sample_mode
 
     print("=" * 80)
     print("Offline validation")
@@ -108,6 +110,7 @@ def main(cfg):
     print(f"val_batches: {cfg.val_batches}")
     print(f"val_batch_size: {cfg.val_batch_size}")
     print(f"val_use_generated_actions: {cfg.val_use_generated_actions}")
+    print(f"val_sample_mode: {cfg.val_sample_mode}")
     print("=" * 80)
 
     # train=True is used here because Workspace currently creates dataset_val /
@@ -129,18 +132,30 @@ def main(cfg):
         k: to_python_number_or_list(v)
         for k, v in metrics.items()
     }
+    # Only save validation-related runtime config.
 
-    print("\nValidation metrics:")
-    for k in sorted(metrics_py.keys()):
-        v = metrics_py[k]
-        if isinstance(v, float):
-            print(f"{k}: {v:.6f}")
-        else:
-            print(f"{k}: {v}")
+    val_config = {
+        "snapshot": str(checkpoint_path),
+        "method_name": str(cfg.method_name),
+        "task": str(cfg.env.task_name),
+        "dataset_root_eval": str(cfg.dataset_root_eval),
+
+        "val_batches": int(cfg.get("val_batches", 0)),
+        "val_batch_size": int(cfg.get("val_batch_size", 0)),
+        "val_use_generated_actions": bool(cfg.get("val_use_generated_actions", True)),
+        "val_sample_mode": str(cfg.get("val_sample_mode", "depth_first")),
+    }
+
+    # Keep metric keys flat for backward compatibility with plotting scripts.
+    output_json = {
+        "_val_config": val_config,
+        **metrics_py,
+    }
+
 
     output_path = Path(workspace.work_dir) / "offline_val_metrics.json"
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(metrics_py, f, indent=2, ensure_ascii=False)
+        json.dump(output_json, f, indent=2, ensure_ascii=False)
 
     print(f"\nSaved metrics to: {output_path}")
 

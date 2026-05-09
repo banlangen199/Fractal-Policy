@@ -457,6 +457,84 @@ class ARActionGenerator(nn.Module):
         pred_actions = sub_chunks.flatten(1, 2)
 
         return pred_actions
+    
+    def sample_cond_sequence(
+        self,
+        memory: torch.Tensor,
+        mem_pos: Optional[torch.Tensor],
+        cond_list: Any = None,
+        cfg: float = 1.0,
+        cfg_schedule: str = "constant",
+        temperature: float = 1.0,
+        filter_threshold: float = 0.0,
+    ) -> torch.Tensor:
+        """
+        Level-wise inference helper.
+
+        It only generates the full sequence of next-level condition tokens.
+        It does NOT call the next level during generation.
+
+        Return:
+            cond_seq: [B, seq_len, hidden_dim]
+        """
+        del cfg, cfg_schedule, temperature, filter_threshold
+
+        # Infer batch size from cond_list first.
+        if isinstance(cond_list, dict):
+            raw_conds = cond_list.get("conds", [])
+        elif isinstance(cond_list, (list, tuple)):
+            raw_conds = list(cond_list)
+        elif torch.is_tensor(cond_list):
+            raw_conds = [cond_list]
+        else:
+            raise ValueError("cond_list must be dict/list/tuple/tensor and cannot be empty")
+
+        if len(raw_conds) == 0:
+            raise ValueError("cond_list contains no condition tensors")
+
+        batch_size = raw_conds[0].shape[0]
+
+        # Align memory to the condition batch.
+        memory, mem_pos = self._align_memory_batch(
+            memory=memory,
+            mem_pos=mem_pos,
+            target_batch=batch_size,
+        )
+
+        conds = self._get_conds(cond_list, batch_size=batch_size)
+
+        self._setup_kv_cache(
+            max_batch_size=batch_size,
+            max_seq_length=self.seq_len,
+            device=memory.device,
+            dtype=memory.dtype,
+        )
+
+        cond_outputs = []
+
+        # Step 0 uses the root/current condition.
+        # Later steps use the previously predicted latent condition.
+        token = self.cond_proj(conds[0]).unsqueeze(1)  # [B, 1, H]
+
+        try:
+            for step in range(self.seq_len):
+                h = self._run_blocks(
+                    token,
+                    memory=memory,
+                    mem_pos=mem_pos,
+                    input_pos=step,
+                )
+
+                pred_cond = h[:, 0, :]  # [B, H]
+                cond_outputs.append(pred_cond)
+
+                # Feed predicted latent condition as next AR input.
+                token = pred_cond.unsqueeze(1)
+
+        finally:
+            self._clear_kv_cache()
+
+        return torch.stack(cond_outputs, dim=1)  # [B, seq_len, H]
 
 
 if __name__ == "__main__":

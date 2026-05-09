@@ -156,6 +156,7 @@ class ActorModel(nn.Module):
         task_embed: Optional[torch.Tensor] = None,
         actions: Optional[torch.Tensor] = None,
         training: bool = True,
+        sample_mode: str = "depth_first",
     ) -> torch.Tensor:
         memory, mem_pos = self._build_memory(obs_feat, proprio)
         if training:
@@ -167,13 +168,27 @@ class ActorModel(nn.Module):
             )
         else: 
             # print("Sampling mode: ignoring provided actions and generating autoregressively.")
-            actions = self.transformer_decoder.sample(
-            memory=memory,
-            mem_pos=mem_pos,
-            )
+            if sample_mode == "depth_first":
+                actions = self.transformer_decoder.sample(
+                    memory=memory,
+                    mem_pos=mem_pos,
+                )
+            elif sample_mode == "levelwise":
+                actions = self.transformer_decoder.levelwise_sample(
+                    memory=memory,
+                    mem_pos=mem_pos,
+                )
+            else:
+                raise ValueError(
+                    f"Unknown sample_mode={sample_mode}. "
+                    "Expected 'depth_first' or 'levelwise'."
+                )
+
             latent_losses = None
 
-        return actions,latent_losses
+        return actions, latent_losses
+
+
 
 class FractalPolicy(BaseMethod):
     def __init__(
@@ -262,6 +277,7 @@ class FractalPolicy(BaseMethod):
         self,
         batch_input: dict[str, torch.Tensor],
         training: bool = True,
+        sample_mode: str = "depth_first",
     ) -> Union[BatchedActionSequence, Tuple[Any, ...]]:
         raw_img = extract_many_from_batch(batch_input, "rgb")
         img = flatten_time_dim_into_channel_dim(stack_tensor_dictionary(raw_img, dim=1))
@@ -284,19 +300,21 @@ class FractalPolicy(BaseMethod):
             task_emb,
             actions=a_gt,
             training=training,
+            sample_mode=sample_mode,
         )
         return a_hat, a_gt, is_pad, latent_losses
 
     @torch.no_grad()
-    def act(self, batch_input: dict[str, torch.Tensor]) -> BatchedActionSequence:
+    def act(self, batch_input: dict[str, torch.Tensor],sample_mode:str="depth_first") -> BatchedActionSequence:
         self.training_mode(training=False)
-        a_hat, _, _ , _ = self.forward(batch_input, training=False)
+        a_hat, _, _ , _ = self.forward(batch_input, training=False, sample_mode=sample_mode)
         return a_hat
 
     def validate(
         self,
         batch_input: dict[str, torch.Tensor],
         use_generated_actions: bool = True,
+        sample_mode: str = "depth_first",
     ) -> dict[str, torch.Tensor]:
         """
         Offline validation on demonstration data.
@@ -317,7 +335,7 @@ class FractalPolicy(BaseMethod):
         if use_generated_actions:
             # Real generated sequence validation.
             # This matches evaluation behavior more closely.
-            a_hat = self.act(batch_input)
+            a_hat = self.act(batch_input, sample_mode=sample_mode)
         else:
             # Teacher-forcing validation.
             # This checks supervised prediction quality without autoregressive error accumulation.

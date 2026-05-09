@@ -176,6 +176,7 @@ class Workspace:
 
         val_batches = int(self.cfg.get("val_batches", 10))
         use_generated_actions = bool(self.cfg.get("val_use_generated_actions", True))
+        val_sample_mode = self.cfg.get("val_sample_mode", "depth_first")
 
         metric_sums = {}
         num_batches = 0
@@ -192,10 +193,17 @@ class Workspace:
                     for k, v in batch.items()
                 }
 
-                metrics = self.agent.validate(
-                    batch,
-                    use_generated_actions=use_generated_actions,
-                )
+                try:
+                    metrics = self.agent.validate(
+                        batch,
+                        use_generated_actions=use_generated_actions,
+                        sample_mode=val_sample_mode,
+                    )
+                except TypeError:
+                    metrics = self.agent.validate(
+                        batch,
+                        use_generated_actions=use_generated_actions,
+    )
 
                 for k, v in metrics.items():
                     if isinstance(v, torch.Tensor):
