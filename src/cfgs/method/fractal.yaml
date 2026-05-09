@@ -40,12 +40,12 @@ method:
       dropout: ${method.actor_model.dropout}
       action_dim: ${method.actor_model.action_dim}
 
-      # Fractal hierarchy (fine -> coarse)
-      action_size_list: [32, 16, 4, 1]
-      hidden_dim_list: [512, 512, 512, 512]
-      num_blocks_list: [3, 3, 3, 3]
-      num_heads_list: [8, 8, 8, 8]
-      generator_type_list: [ar, ar, ar]
+      # Fractal hierarchy ( coarse-> fine)
+      action_size_list: [16, 4, 1]
+      hidden_dim_list: [512, 512, 512]
+      num_blocks_list: [6, 6, 6]
+      num_heads_list: [8, 8, 8]
+      generator_type_list: [ar, ar]
 
     hidden_dim: 512
     enc_layers: 4

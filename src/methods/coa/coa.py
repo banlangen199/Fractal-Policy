@@ -446,6 +446,126 @@ class CoA(BaseMethod):
         # dummy_action = torch.tensor([0,0,1,0,0,0,1,1], device=a_hat.device).unsqueeze(0).unsqueeze(0)
         return a_hat
         # return dummy_action
+    
+    def validate(
+            self,
+            batch_input: dict[str, torch.Tensor],
+            use_generated_actions: bool = True,
+        ) -> dict[str, torch.Tensor]:
+            """
+            Offline validation for CoA.
+
+            use_generated_actions=True:
+                obs -> CoA inference path -> predicted action sequence
+                compare predicted actions with GT actions.
+
+            use_generated_actions=False:
+                teacher-forcing path:
+                obs + GT actions -> predicted actions
+                compare predicted actions with GT actions.
+            """
+            self.training_mode(training=False)
+
+            a_gt = batch_input["action"]
+            is_pad = batch_input["is_pad"]
+
+            if use_generated_actions:
+                # Important:
+                # Do NOT call self.act() here, because self.act() flips/rolls actions
+                # for environment execution when action_order is REVERSE/HYBRID.
+                # The dataset GT for CoA is already stored in the internal training order,
+                # so we compare raw inference output against raw GT.
+                a_hat, _, _, _, _, _, _ = self.forward(
+                    batch_input,
+                    training=False,
+                )
+                x_hat, x_gt = None, None
+            else:
+                # Teacher-forcing validation.
+                a_hat, a_gt, x_hat, x_gt, is_pad, _, _ = self.forward(
+                    batch_input,
+                    training=True,
+                )
+
+            # CoA usually uses MTP format:
+            #   a_hat: [B, T, M, D]
+            #   a_gt:  [B, T, M, D]
+            #   is_pad:[B, T, M]
+            #
+            # But make this robust in case inference returns [B, T, D].
+            if a_hat.ndim == 3 and a_gt.ndim == 4:
+                a_gt_cmp = a_gt[:, :, 0, :]
+                is_pad_cmp = is_pad[:, :, 0]
+            else:
+                a_gt_cmp = a_gt
+                is_pad_cmp = is_pad
+
+            if self.loss_type == "l1":
+                raw_action_loss = F.l1_loss(a_hat, a_gt_cmp, reduction="none")
+            elif self.loss_type == "mse":
+                raw_action_loss = F.mse_loss(a_hat, a_gt_cmp, reduction="none")
+            else:
+                raise ValueError(f"Unknown loss_type: {self.loss_type}")
+
+            valid = (~is_pad_cmp.bool()).unsqueeze(-1).expand_as(raw_action_loss)
+            action_loss = raw_action_loss.masked_fill(~valid, 0.0)
+
+            def masked_mean(loss: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+                return loss.sum() / mask.sum().clamp_min(1)
+
+            metrics = {
+                "action_loss": masked_mean(action_loss, valid),
+            }
+
+            # MTP case: [B, T, M, D]
+            if action_loss.ndim == 4:
+                main_loss = action_loss[:, :, 0, :]
+                main_valid = valid[:, :, 0, :]
+
+                metrics.update({
+                    # first query / key-frame action
+                    "kfa_loss": masked_mean(main_loss[:, :1, :], main_valid[:, :1, :]),
+                    "kfa_pos_loss": masked_mean(main_loss[:, :1, :3], main_valid[:, :1, :3]),
+                    "kfa_ori_loss": masked_mean(main_loss[:, :1, 3:7], main_valid[:, :1, 3:7]),
+                    "kfa_gripper_loss": masked_mean(main_loss[:, :1, -1:], main_valid[:, :1, -1:]),
+
+                    # remaining trajectory actions, first MTP head only
+                    "traj_loss": masked_mean(main_loss[:, 1:, :], main_valid[:, 1:, :]),
+                    "traj_pos_loss": masked_mean(main_loss[:, 1:, :3], main_valid[:, 1:, :3]),
+                    "traj_ori_loss": masked_mean(main_loss[:, 1:, 3:7], main_valid[:, 1:, 3:7]),
+                    "traj_gripper_loss": masked_mean(main_loss[:, 1:, -1:], main_valid[:, 1:, -1:]),
+                })
+            else:
+                # Non-MTP fallback: [B, T, D]
+                metrics.update({
+                    "kfa_loss": masked_mean(action_loss[:, :1, :], valid[:, :1, :]),
+                    "kfa_pos_loss": masked_mean(action_loss[:, :1, :3], valid[:, :1, :3]),
+                    "kfa_ori_loss": masked_mean(action_loss[:, :1, 3:7], valid[:, :1, 3:7]),
+                    "kfa_gripper_loss": masked_mean(action_loss[:, :1, -1:], valid[:, :1, -1:]),
+
+                    "traj_loss": masked_mean(action_loss[:, 1:, :], valid[:, 1:, :]),
+                    "traj_pos_loss": masked_mean(action_loss[:, 1:, :3], valid[:, 1:, :3]),
+                    "traj_ori_loss": masked_mean(action_loss[:, 1:, 3:7], valid[:, 1:, 3:7]),
+                    "traj_gripper_loss": masked_mean(action_loss[:, 1:, -1:], valid[:, 1:, -1:]),
+                })
+
+            # Optional latent validation.
+            # Only available in teacher-forcing mode because x_gt requires GT actions.
+            if (not use_generated_actions) and (x_hat is not None) and (x_gt is not None):
+                if self.latent_loss_type == "l1":
+                    raw_latent_loss = F.l1_loss(x_hat, x_gt, reduction="none")
+                elif self.latent_loss_type == "mse":
+                    raw_latent_loss = F.mse_loss(x_hat, x_gt, reduction="none")
+                else:
+                    raise ValueError(f"Unknown latent_loss_type: {self.latent_loss_type}")
+
+                # x_hat/x_gt hidden dim usually corresponds to action positions.
+                latent_valid = (~is_pad.bool()).unsqueeze(-1).expand_as(raw_latent_loss)
+                latent_loss = raw_latent_loss.masked_fill(~latent_valid, 0.0)
+                metrics["latent_loss"] = masked_mean(latent_loss, latent_valid)
+
+            return metrics
+    
 
     def _compute_loss(self, batch_input: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         '''

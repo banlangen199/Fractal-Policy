@@ -343,18 +343,76 @@ class FractalPolicy(BaseMethod):
             return loss.sum() / mask.sum().clamp_min(1)
 
         metrics = {
+            # Full sequence average loss
             "action_loss": masked_mean(action_loss, valid),
+
+            # Exclude the first action, keeping your previous metric definition
             "traj_loss": masked_mean(action_loss[:, 1:, :], valid[:, 1:, :]),
             "pos_loss": masked_mean(action_loss[:, 1:, :3], valid[:, 1:, :3]),
             "ori_loss": masked_mean(action_loss[:, 1:, 3:7], valid[:, 1:, 3:7]),
-            "gripper_loss": masked_mean(action_loss[:, 1:, -1], valid[:, 1:, -1]),
+            "gripper_loss": masked_mean(action_loss[:, 1:, -1:], valid[:, 1:, -1:]),
 
-            # First action is important because execution usually starts from the first few actions.
+            # First action loss
             "first_action_loss": masked_mean(action_loss[:, :1, :], valid[:, :1, :]),
             "first_pos_loss": masked_mean(action_loss[:, :1, :3], valid[:, :1, :3]),
             "first_ori_loss": masked_mean(action_loss[:, :1, 3:7], valid[:, :1, 3:7]),
-            "first_gripper_loss": masked_mean(action_loss[:, :1, -1], valid[:, :1, -1]),
+            "first_gripper_loss": masked_mean(action_loss[:, :1, -1:], valid[:, :1, -1:]),
         }
+
+        # ------------------------------------------------------------
+        # Prefix loss:
+        # Compare models with different action horizons fairly.
+        # For example:
+        #   32-16-4-1 model prefix_16_action_loss
+        #   vs
+        #   16-4-1 model prefix_16_action_loss
+        # ------------------------------------------------------------
+        prefix_lengths = [1, 2, 4, 8, 16, 32]
+
+        for k in prefix_lengths:
+            if k <= action_loss.shape[1]:
+                metrics[f"prefix_{k}_action_loss"] = masked_mean(
+                    action_loss[:, :k, :],
+                    valid[:, :k, :],
+                )
+                metrics[f"prefix_{k}_pos_loss"] = masked_mean(
+                    action_loss[:, :k, :3],
+                    valid[:, :k, :3],
+                )
+                metrics[f"prefix_{k}_ori_loss"] = masked_mean(
+                    action_loss[:, :k, 3:7],
+                    valid[:, :k, 3:7],
+                )
+                metrics[f"prefix_{k}_gripper_loss"] = masked_mean(
+                    action_loss[:, :k, -1:],
+                    valid[:, :k, -1:],
+                )
+
+        # ------------------------------------------------------------
+        # Per-timestep loss:
+        # Diagnose whether sample error accumulates over time.
+        # If t00 is low but t15/t31 are high, then long-horizon
+        # accumulation is severe.
+        # ------------------------------------------------------------
+        num_steps = action_loss.shape[1]
+
+        for t in range(num_steps):
+            metrics[f"t{t:02d}_action_loss"] = masked_mean(
+                action_loss[:, t:t + 1, :],
+                valid[:, t:t + 1, :],
+            )
+            metrics[f"t{t:02d}_pos_loss"] = masked_mean(
+                action_loss[:, t:t + 1, :3],
+                valid[:, t:t + 1, :3],
+            )
+            metrics[f"t{t:02d}_ori_loss"] = masked_mean(
+                action_loss[:, t:t + 1, 3:7],
+                valid[:, t:t + 1, 3:7],
+            )
+            metrics[f"t{t:02d}_gripper_loss"] = masked_mean(
+                action_loss[:, t:t + 1, -1:],
+                valid[:, t:t + 1, -1:],
+            )
 
         return metrics
 
@@ -399,7 +457,7 @@ class FractalPolicy(BaseMethod):
             latent_total = sum(per_level) / len(per_level)
             loss_dict["latent_loss"] = latent_total
 
-        total_loss = loss_dict["action_loss"] + loss_dict["latent_loss"]
+        total_loss = loss_dict["action_loss"] + 0.1 * loss_dict["latent_loss"]
         return total_loss, loss_dict
 
     def update(self, batch_input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
