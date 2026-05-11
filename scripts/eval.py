@@ -37,6 +37,10 @@ def main(cfg):
     cfg.method_name = cfg_ckpt.method_name
     cfg.wandb.use = False
 
+    eval_sample_mode = cfg.get("eval_sample_mode", "depth_first")
+    
+    cfg.eval_sample_mode = eval_sample_mode
+
     workspace = Workspace(cfg, train=False)
     workspace.eval()
 

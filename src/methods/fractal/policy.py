@@ -475,7 +475,7 @@ class FractalPolicy(BaseMethod):
             latent_total = sum(per_level) / len(per_level)
             loss_dict["latent_loss"] = latent_total
 
-        total_loss = loss_dict["action_loss"] + 0.1 * loss_dict["latent_loss"]
+        total_loss = loss_dict["action_loss"] + 1 * loss_dict["latent_loss"]
         return total_loss, loss_dict
 
     def update(self, batch_input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:

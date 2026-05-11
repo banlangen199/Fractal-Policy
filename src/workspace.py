@@ -471,6 +471,8 @@ class Workspace:
         """
         metrics = {}
         
+        eval_sample_mode=self.cfg.get("eval_sample_mode", "depth_first")
+
         with torch.no_grad():
             # Convert observations to torch tensors
             torch_observations = {
@@ -488,7 +490,7 @@ class Workspace:
                 }
             
             # Get action from agent
-            action = self.agent.act(torch_observations)
+            action = self.agent.act(torch_observations, sample_mode=eval_sample_mode)
             
             # Handle agent info if returned as tuple
             if isinstance(action, tuple):
@@ -578,18 +580,32 @@ class Workspace:
                     action, (next_observation, reward, termination, truncation, next_info), env_metrics = \
                         self._perform_env_steps(observation, info, self.eval_env, eval_mode=True)
                     
+                    # How many low-level simulator/action steps were actually executed
+                    # inside this single policy call.
+                    primitive_steps = int(next_info.get("primitive_steps", 1))
+
                     # Update for next step
                     observation = next_observation
                     info = next_info
                     metrics.update(env_metrics)
-                    
-                    # Record video frame
-                    self.eval_video_recorder.record(self.eval_env)
-                    
-                    # Update counters
+
+                    # Record video frames.
+                    # If the wrapper only returns the final state, record the final frame
+                    # primitive_steps times so that video duration is no longer compressed
+                    # when execution_length > 1.
+                    if self.eval_video_recorder.enabled:
+                        primitive_frames = next_info.get("primitive_frames", None)
+
+                        if primitive_frames is not None:
+                            self.eval_video_recorder.frames.extend(primitive_frames)
+                        else:
+                            for _ in range(max(1, primitive_steps)):
+                                self.eval_video_recorder.record(self.eval_env)
+
+                    # Update counters by primitive simulator steps, not policy calls
                     total_reward += reward
-                    step += 1
-                    episode_steps += 1
+                    step += primitive_steps
+                    episode_steps += primitive_steps
 
                 # Save video and categorize by success/failure
                 video = np.array(self.eval_video_recorder.frames)

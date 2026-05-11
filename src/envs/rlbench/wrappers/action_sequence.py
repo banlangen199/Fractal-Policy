@@ -216,6 +216,10 @@ class TemporalEnsemble(ActionSequence):
         # info["action_sequence_mask"] = (
         #     np.arange(self._sequence_length) < action_idx_reached
         # ).astype(int)
+
+        # Number of low-level simulator steps actually executed in this wrapper step.
+        info["primitive_steps"] = action_idx_reached
+        
         if self.is_demo_env:
             info["demo_action"] = np.array(demo_actions)
         self.previous_action = sub_action
