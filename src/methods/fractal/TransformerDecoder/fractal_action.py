@@ -24,6 +24,7 @@ class FractalAction(nn.Module):
         use_lang_cond: bool = False,
         fractal_level: int = 0,
         latent_loss_type: str = "l1",
+        memory_access_list: Optional[list[bool]] = None,
         *args,
         **kwargs,
     ):
@@ -55,6 +56,7 @@ class FractalAction(nn.Module):
             cond_dim=hidden_dim_list[self.fractal_level-1] if self.fractal_level > 0 else hidden_dim_list[0],
             dropout=dropout,
             latent_loss_type=latent_loss_type,
+            use_memory=memory_access_list[self.fractal_level] if memory_access_list is not None else True,
         )
 
         # Recursive next level, same pattern as fractalgen FractalGen.
@@ -70,6 +72,7 @@ class FractalAction(nn.Module):
                 use_lang_cond=use_lang_cond,
                 fractal_level=self.fractal_level + 1,
                 latent_loss_type=latent_loss_type,
+                memory_access_list=memory_access_list,
             )
         else:
             self.next_fractal = ActionHead(

@@ -47,6 +47,8 @@ method:
       num_heads_list: [8, 8, 8]
       generator_type_list: [ar, ar]
 
+      memory_access_list: [true, true]
+
     hidden_dim: 512
     enc_layers: 4
     dropout: 0.1

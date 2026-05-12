@@ -106,19 +106,38 @@ class SelfAttentionWithKVCache(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, hidden_dim: int, nheads: int, dim_feedforward: int, dropout: float):
+    def __init__(
+        self,
+        hidden_dim: int,
+        nheads: int,
+        dim_feedforward: int,
+        dropout: float,
+        use_memory: bool = True,
+    ):
         super().__init__()
+
+        self.use_memory = use_memory
+
         self.self_attn = SelfAttentionWithKVCache(
             hidden_dim=hidden_dim,
             nheads=nheads,
             dropout=dropout,
         )
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=nheads,
-            dropout=dropout,
-            batch_first=True,
-        )
+
+        if self.use_memory:
+            self.cross_attn = nn.MultiheadAttention(
+                embed_dim=hidden_dim,
+                num_heads=nheads,
+                dropout=dropout,
+                batch_first=True,
+            )
+            self.norm2 = nn.LayerNorm(hidden_dim)
+            self.dropout2 = nn.Dropout(dropout)
+        else:
+            self.cross_attn = None
+            self.norm2 = None
+            self.dropout2 = None
+
         self.ffn = nn.Sequential(
             nn.Linear(hidden_dim, dim_feedforward),
             nn.GELU(),
@@ -126,11 +145,10 @@ class TransformerBlock(nn.Module):
             nn.Linear(dim_feedforward, hidden_dim),
             nn.Dropout(dropout),
         )
+
         self.norm1 = nn.LayerNorm(hidden_dim)
-        self.norm2 = nn.LayerNorm(hidden_dim)
         self.norm3 = nn.LayerNorm(hidden_dim)
         self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
 
     def setup_kv_cache(self, max_batch_size: int, max_seq_length: int, device: torch.device, dtype: torch.dtype) -> None:
         self.self_attn.setup_kv_cache(
@@ -146,7 +164,7 @@ class TransformerBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        memory: torch.Tensor,
+        memory: Optional[torch.Tensor],
         x_pos: Optional[torch.Tensor] = None,
         mem_pos: Optional[torch.Tensor] = None,
         causal: bool = False,
@@ -158,13 +176,22 @@ class TransformerBlock(nn.Module):
             causal=causal,
             input_pos=input_pos,
         )
-
         x = self.norm1(x + self.dropout1(self_attn_out))
 
-        q = x if x_pos is None else x + x_pos
-        k = memory if mem_pos is None else memory + mem_pos
-        cross_attn_out = self.cross_attn(q, k, memory, need_weights=False)[0]
-        x = self.norm2(x + self.dropout2(cross_attn_out))
+        if self.use_memory:
+            if memory is None:
+                raise ValueError("memory cannot be None when use_memory=True")
+
+            q = x if x_pos is None else x + x_pos
+            k = memory if mem_pos is None else memory + mem_pos
+
+            cross_attn_out = self.cross_attn(
+                q,
+                k,
+                memory,
+                need_weights=False,
+            )[0]
+            x = self.norm2(x + self.dropout2(cross_attn_out))
 
         x = self.norm3(x + self.ffn(x))
         return x
@@ -182,6 +209,7 @@ class ARActionGenerator(nn.Module):
         dropout: float,
         action_dim: int = 8,
         latent_loss_type: str = "l1",
+        use_memory: bool = True,
     ):
         super().__init__()
         self.seq_len = seq_len
@@ -195,6 +223,21 @@ class ARActionGenerator(nn.Module):
         self.chunk_flat_proj = nn.Linear(sub_trunk_size * action_dim, hidden_dim)
         self.pos_embed = nn.Parameter(torch.randn(1, seq_len + 1, hidden_dim) * 0.02)
         dim_feedforward = hidden_dim * 4
+
+        self.use_memory = use_memory
+        self.memory_dim = hidden_dim 
+
+        if self.use_memory:
+            if self.memory_dim == hidden_dim:
+                self.memory_proj = nn.Identity()
+                self.mem_pos_proj = nn.Identity()
+            else:
+                self.memory_proj = nn.Linear(self.memory_dim, hidden_dim)
+                self.mem_pos_proj = nn.Linear(self.memory_dim, hidden_dim)
+        else:
+            self.memory_proj = None
+            self.mem_pos_proj = None
+
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
@@ -202,6 +245,7 @@ class ARActionGenerator(nn.Module):
                     nheads=num_heads,
                     dim_feedforward=dim_feedforward,
                     dropout=dropout,
+                    use_memory=self.use_memory,
                 )
                 for _ in range(num_blocks)
             ]
@@ -265,6 +309,36 @@ class ARActionGenerator(nn.Module):
             mem_pos = mem_pos.unsqueeze(1).expand(cur_batch, repeat, mem_pos.shape[1], mem_pos.shape[2]).reshape(
                 target_batch, mem_pos.shape[1], mem_pos.shape[2]
             )
+        return memory, mem_pos
+    
+    def _prepare_memory(
+        self,
+        memory: Optional[torch.Tensor],
+        mem_pos: Optional[torch.Tensor],
+        target_batch: int,
+    ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Align and project encoder memory to this layer's hidden_dim.
+
+        If use_memory=False, this layer does not cross-attend encoder memory.
+        """
+        if not self.use_memory:
+            return None, None
+
+        if memory is None:
+            raise ValueError("memory cannot be None when use_memory=True")
+
+        memory, mem_pos = self._align_memory_batch(
+            memory=memory,
+            mem_pos=mem_pos,
+            target_batch=target_batch,
+        )
+
+        memory = self.memory_proj(memory)
+
+        if mem_pos is not None:
+            mem_pos = self.mem_pos_proj(mem_pos)
+
         return memory, mem_pos
 
     def _get_conds(self, cond_list: Any, batch_size: int) -> list[torch.Tensor]:
@@ -358,7 +432,7 @@ class ARActionGenerator(nn.Module):
             )
         sub_chunks = actions.view(b, self.seq_len, sub_chunk_size, d)
 
-        memory, mem_pos = self._align_memory_batch(memory, mem_pos, b)
+        memory, mem_pos = self._prepare_memory(memory, mem_pos, b)
         conds = self._get_conds(cond_list, batch_size=b)
 
         # Get next-level conditions from current-level sub-chunks.
@@ -405,20 +479,39 @@ class ARActionGenerator(nn.Module):
         filter_threshold: float = 0.0,
     ) :
         """inference"""
-        memory, mem_pos = self._align_memory_batch(memory, mem_pos, memory.shape[0])
-        conds = self._get_conds(cond_list, batch_size=memory.shape[0])
-        b = conds[0].shape[0]
+        if isinstance(cond_list, dict):
+            raw_conds = cond_list.get("conds", [])
+        elif isinstance(cond_list, (list, tuple)):
+            raw_conds = list(cond_list)
+        elif torch.is_tensor(cond_list):
+            raw_conds = [cond_list]
+        else:
+            raise ValueError("cond_list must be dict/list/tuple/tensor and cannot be empty")
+
+        if len(raw_conds) == 0:
+            raise ValueError("cond_list contains no condition tensors")
+
+        b = raw_conds[0].shape[0]
+
+        memory, mem_pos = self._prepare_memory(
+            memory=memory,
+            mem_pos=mem_pos,
+            target_batch=b,
+        )
+
+        conds = self._get_conds(cond_list, batch_size=b)
+        
         sub_chunks = torch.zeros(
             b,
             self.seq_len,
             self.sub_trunk_size,
             self.action_dim,
-            device=memory.device,
-            dtype=memory.dtype,
+            device=conds[0].device,
+            dtype=conds[0].dtype,
         )
 
         num_steps = self.seq_len 
-        self._setup_kv_cache(max_batch_size=b, max_seq_length=num_steps, device=memory.device, dtype=memory.dtype)
+        self._setup_kv_cache(max_batch_size=b, max_seq_length=num_steps, device=conds[0].device, dtype=conds[0].dtype)
         try:
             for step in range(num_steps):
                 cur_chunks=sub_chunks.clone() 
@@ -495,7 +588,7 @@ class ARActionGenerator(nn.Module):
         batch_size = raw_conds[0].shape[0]
 
         # Align memory to the condition batch.
-        memory, mem_pos = self._align_memory_batch(
+        memory, mem_pos = self._prepare_memory(
             memory=memory,
             mem_pos=mem_pos,
             target_batch=batch_size,
@@ -506,8 +599,8 @@ class ARActionGenerator(nn.Module):
         self._setup_kv_cache(
             max_batch_size=batch_size,
             max_seq_length=self.seq_len,
-            device=memory.device,
-            dtype=memory.dtype,
+            device=conds[0].device,
+            dtype=conds[0].dtype,
         )
 
         cond_outputs = []
