@@ -225,15 +225,12 @@ class ARActionGenerator(nn.Module):
         dim_feedforward = hidden_dim * 4
 
         self.use_memory = use_memory
-        self.memory_dim = hidden_dim 
 
         if self.use_memory:
-            if self.memory_dim == hidden_dim:
-                self.memory_proj = nn.Identity()
-                self.mem_pos_proj = nn.Identity()
-            else:
-                self.memory_proj = nn.Linear(self.memory_dim, hidden_dim)
-                self.mem_pos_proj = nn.Linear(self.memory_dim, hidden_dim)
+            # encoder memory dim may be 512, while this layer hidden_dim may be
+            # 1024 / 512 / 256 / 128. LazyLinear infers the input dim on first use.
+            self.memory_proj = nn.Linear(cond_dim, hidden_dim)
+            self.mem_pos_proj = nn.Linear(cond_dim, hidden_dim)
         else:
             self.memory_proj = None
             self.mem_pos_proj = None
