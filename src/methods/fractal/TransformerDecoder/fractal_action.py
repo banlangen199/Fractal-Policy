@@ -103,7 +103,7 @@ class FractalAction(nn.Module):
 
         if self.fractal_level == 0:
             root_cond = self.sos_embedding[:, 0, :].expand(batch_size, -1)
-            cond_list = [root_cond for _ in range(5)]
+            cond_list = [root_cond for _ in range(3)]
 
         actions, next_cond_list, latent_loss=self.generator(
             actions=actions,
@@ -147,7 +147,7 @@ class FractalAction(nn.Module):
         if self.fractal_level == 0:
             batch_size = memory.shape[0]
             root_cond = self.sos_embedding[:, 0, :].expand(batch_size, -1)
-            cond_list = [root_cond for _ in range(5)]
+            cond_list = [root_cond for _ in range(3)]
 
         if self.fractal_level < self.num_fractal_levels - 2:
             next_level_sample_function = partial(
@@ -198,7 +198,7 @@ class FractalAction(nn.Module):
         if self.fractal_level == 0:
             batch_size = memory.shape[0]
             root_cond = self.sos_embedding[:, 0, :].expand(batch_size, -1)
-            cond_list = [root_cond for _ in range(5)]
+            cond_list = [root_cond for _ in range(3)]
 
         if not hasattr(self.generator, "sample_cond_sequence"):
             raise NotImplementedError(

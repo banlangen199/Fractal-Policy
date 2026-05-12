@@ -5,6 +5,7 @@ from typing import Any, Callable, Optional, Tuple
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class SelfCrossAttentionBlock(nn.Module):
@@ -81,7 +82,8 @@ class MARActionGenerator(nn.Module):
         dropout: float,
         action_dim: int = 8,
         num_iters: int = 4,
-        num_conds: int = 5,
+        num_conds: int = 3,
+        latent_loss_type: str= "l1",
     ):
         super().__init__()
         self.seq_len = seq_len
@@ -91,6 +93,7 @@ class MARActionGenerator(nn.Module):
         self.cond_dim = cond_dim
         self.num_iters = num_iters
         self.num_conds = num_conds
+        self.latent_loss_type = latent_loss_type
 
         self.cond_proj = nn.Linear(cond_dim, hidden_dim)
         self.chunk_flat_proj = nn.Linear(sub_trunk_size * action_dim, hidden_dim)
@@ -189,24 +192,57 @@ class MARActionGenerator(nn.Module):
         return feat.reshape(b, s, self.hidden_dim)
 
     def _build_next_conds(self, middle_cond: torch.Tensor) -> list[torch.Tensor]:
-        # middle_cond: [B, seq_len, H]
-        middle_vec = middle_cond
-        grid = int(math.sqrt(self.seq_len))
-        if grid * grid != self.seq_len:
-            return [middle_vec]
+        """
+        Build next-level conditions for 1D action sequence.
 
-        b, _, hdim = middle_cond.shape
-        x = middle_cond.reshape(b, grid, grid, hdim)
-        top = torch.cat([torch.zeros(b, 1, grid, hdim, device=x.device, dtype=x.dtype), x[:, :-1]], dim=1)
-        right = torch.cat([x[:, :, 1:], torch.zeros(b, grid, 1, hdim, device=x.device, dtype=x.dtype)], dim=2)
-        bottom = torch.cat([x[:, 1:], torch.zeros(b, 1, grid, hdim, device=x.device, dtype=x.dtype)], dim=1)
-        left = torch.cat([torch.zeros(b, grid, 1, hdim, device=x.device, dtype=x.dtype), x[:, :, :-1]], dim=2)
+        middle_cond: [B, seq_len, H]
 
-        top_vec = top.reshape(b, self.seq_len, hdim)
-        right_vec = right.reshape(b, self.seq_len, hdim)
-        bottom_vec = bottom.reshape(b, self.seq_len, hdim)
-        left_vec = left.reshape(b, self.seq_len, hdim)
-        return [middle_vec, top_vec, right_vec, bottom_vec, left_vec]
+        Recommended 1D conditions:
+            middle: current token condition
+            prev:   previous temporal neighbor
+            next:   next temporal neighbor
+        """
+        b, seq_len, hdim = middle_cond.shape
+
+        middle = middle_cond
+
+        zeros_left = torch.zeros(
+            b, 1, hdim,
+            device=middle_cond.device,
+            dtype=middle_cond.dtype,
+        )
+        zeros_right = torch.zeros(
+            b, 1, hdim,
+            device=middle_cond.device,
+            dtype=middle_cond.dtype,
+        )
+
+        prev_cond = torch.cat(
+            [zeros_left, middle_cond[:, :-1, :]],
+            dim=1,
+        )
+
+        next_cond = torch.cat(
+            [middle_cond[:, 1:, :], zeros_right],
+            dim=1,
+        )
+
+        if self.num_conds == 1:
+            return [middle]
+
+        if self.num_conds == 3:
+            return [middle, prev_cond, next_cond]
+
+        if self.num_conds == 4:
+            # Optional global anchor.
+            # For REVERSE target, position 0 can be treated as keyframe-side anchor.
+            global_cond = middle_cond[:, :1, :].expand(-1, seq_len, -1)
+            return [middle, prev_cond, next_cond, global_cond]
+
+        raise ValueError(
+            f"Unsupported num_conds={self.num_conds} for 1D MAR. "
+            "Use 1, 3, or 4."
+        )
 
     def _random_mask(self, batch_size: int, device: torch.device) -> torch.Tensor:
         # True means masked.
@@ -308,10 +344,26 @@ class MARActionGenerator(nn.Module):
             mem_pos=mem_pos,
         )
 
+        #latent_loss
+        sub_chunks_feat = self._chunk_to_feat(sub_chunks)
+        target=sub_chunks_feat.detach()
+
+        loss_type=self.latent_loss_type
+        
+        if loss_type=='mse':
+            latent_loss=F.mse_loss(cond_list_next[0], target, reduction='none')
+        elif loss_type=='cosine':
+            latent_loss=1 - F.cosine_similarity(cond_list_next[0], target, dim=-1)
+        elif loss_type=='l1':
+            latent_loss=F.l1_loss(cond_list_next[0], target, reduction='none')
+        else:
+            raise ValueError(f"Unsupported loss_type={loss_type}")
+
+
         actions = sub_chunks.reshape(b * self.seq_len, sub_trunk_size, d)
         cond_list_next = [c.reshape(b * self.seq_len, -1) for c in cond_list_next]
-        aux_loss = actions.new_zeros(())
-        return actions, cond_list_next, aux_loss
+
+        return actions, cond_list_next, latent_loss
 
     def sample(
         self,

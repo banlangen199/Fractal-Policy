@@ -518,7 +518,7 @@ class Workspace:
 
     def eval(self) -> Dict[str, Any]:
         """
-        Complete evaluation loop with environment interaction.
+        Complete evaluation loop with environment interaction.    
         
         Returns:
             Dictionary containing evaluation metrics
