@@ -412,25 +412,25 @@ class FractalPolicy(BaseMethod):
         # If t00 is low but t15/t31 are high, then long-horizon
         # accumulation is severe.
         # ------------------------------------------------------------
-        num_steps = action_loss.shape[1]
+        # num_steps = action_loss.shape[1]
 
-        for t in range(num_steps):
-            metrics[f"t{t:02d}_action_loss"] = masked_mean(
-                action_loss[:, t:t + 1, :],
-                valid[:, t:t + 1, :],
-            )
-            metrics[f"t{t:02d}_pos_loss"] = masked_mean(
-                action_loss[:, t:t + 1, :3],
-                valid[:, t:t + 1, :3],
-            )
-            metrics[f"t{t:02d}_ori_loss"] = masked_mean(
-                action_loss[:, t:t + 1, 3:7],
-                valid[:, t:t + 1, 3:7],
-            )
-            metrics[f"t{t:02d}_gripper_loss"] = masked_mean(
-                action_loss[:, t:t + 1, -1:],
-                valid[:, t:t + 1, -1:],
-            )
+        # for t in range(num_steps):
+        #     metrics[f"t{t:02d}_action_loss"] = masked_mean(
+        #         action_loss[:, t:t + 1, :],
+        #         valid[:, t:t + 1, :],
+        #     )
+        #     metrics[f"t{t:02d}_pos_loss"] = masked_mean(
+        #         action_loss[:, t:t + 1, :3],
+        #         valid[:, t:t + 1, :3],
+        #     )
+        #     metrics[f"t{t:02d}_ori_loss"] = masked_mean(
+        #         action_loss[:, t:t + 1, 3:7],
+        #         valid[:, t:t + 1, 3:7],
+        #     )
+        #     metrics[f"t{t:02d}_gripper_loss"] = masked_mean(
+        #         action_loss[:, t:t + 1, -1:],
+        #         valid[:, t:t + 1, -1:],
+        #     )
 
         return metrics
 

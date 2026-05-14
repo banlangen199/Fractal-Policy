@@ -41,13 +41,13 @@ method:
       action_dim: ${method.actor_model.action_dim}
 
       # Fractal hierarchy ( coarse-> fine)
-      action_size_list: [16, 4, 1]
-      hidden_dim_list: [512, 512, 512]
-      num_blocks_list: [6, 6, 6]
-      num_heads_list: [8, 8, 8]
-      generator_type_list: [ar, ar]
+      action_size_list: [64, 32, 8, 1]
+      hidden_dim_list: [512, 256, 256, 128]
+      num_blocks_list: [6, 4, 4, 4]
+      num_heads_list: [8, 8, 8, 8]
+      generator_type_list: [ar, ar, ar, ar]
 
-      memory_access_list: [true, true]
+      memory_access_list: [true, false, false, false]
 
     hidden_dim: 512
     enc_layers: 4

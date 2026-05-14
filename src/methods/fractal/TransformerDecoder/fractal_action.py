@@ -77,11 +77,7 @@ class FractalAction(nn.Module):
         else:
             self.next_fractal = ActionHead(
                 c_channels=hidden_dim_list[self.fractal_level],
-                width=hidden_dim_list[self.fractal_level+1],
-                depth=num_blocks_list[self.fractal_level+1],
-                num_heads=num_heads_list[self.fractal_level+1],
-                action_dim=action_dim,
-                dropout=dropout,    
+                action_dim=action_dim,  
             )
 
 

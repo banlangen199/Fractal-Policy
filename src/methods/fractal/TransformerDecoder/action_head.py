@@ -16,20 +16,13 @@ class ActionHead(nn.Module):
     def __init__(
         self,
         c_channels: int,     
-        width: int,
-        depth: int,
-        num_heads: int,
         action_dim: int = 8,
-        dim_feedforward: int = 3200,
-        dropout: float = 0.1,
-        loss_type: str = "l1",
     ):
         super().__init__()
         self.action_dim = action_dim
         self.cond_dim = c_channels
 
         # Leaf stage uses direct regression from condition to action.
-        del depth, num_heads, dim_feedforward, dropout, loss_type, width
         self.cond_to_action = nn.Linear(c_channels, action_dim)
 
         self.initialize_weights()
