@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .action_encoder import EmbedChunkEncoder
+from .action_encoder import ChunkEncoder
 
 class KVCache(nn.Module):
     def __init__(self, max_batch_size: int, max_seq_length: int, n_head: int, head_dim: int):
@@ -222,7 +222,7 @@ class ARActionGenerator(nn.Module):
         self.latent_loss_type = latent_loss_type
 
         self.cond_proj = nn.Linear(cond_dim, hidden_dim)
-        self.chunk_proj = EmbedChunkEncoder(
+        self.chunk_proj = ChunkEncoder(
             action_dim=action_dim,
             hidden_dim=hidden_dim,
             max_chunk_len=sub_trunk_size,
@@ -401,11 +401,9 @@ class ARActionGenerator(nn.Module):
         conds = cond_list
         cond_token = self.cond_proj(conds[0]).unsqueeze(1)
 
-        chunk_embed = de_action_head(sub_chunks)
-        feat = self.chunk_proj(chunk_embed)
+        feat = self.chunk_proj(de_action_head=de_action_head, chunks=sub_chunks)
 
-        sub_chunks_feat = self._chunk_to_feat(sub_chunks)
-        teacher_in = torch.cat([cond_token, sub_chunks_feat], dim=1)
+        teacher_in = torch.cat([cond_token, feat], dim=1)
 
         if input_pos is not None:
             # Keep a single-step sequence dimension for KV-cache decoding.
@@ -566,6 +564,9 @@ class ARActionGenerator(nn.Module):
         self,
         memory: torch.Tensor,
         mem_pos: Optional[torch.Tensor],
+        proprio,
+        action_head,
+        de_action_head,
         cond_list: Any = None,
     ) -> torch.Tensor:
         """

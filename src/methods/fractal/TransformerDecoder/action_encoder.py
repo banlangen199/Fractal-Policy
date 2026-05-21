@@ -5,7 +5,7 @@ from torch.nn.modules.transformer import _get_clones
 from torch import nn, Tensor
 
 
-class EmbedChunkEncoder(nn.Module):
+class ChunkEncoder(nn.Module):
     def __init__(
         self,
         action_dim: int,
@@ -32,7 +32,7 @@ class EmbedChunkEncoder(nn.Module):
         self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
         self.norm = nn.LayerNorm(hidden_dim)
 
-    def forward(self, chunks: torch.Tensor) -> torch.Tensor:
+    def forward(self, de_action_head, chunks: torch.Tensor) -> torch.Tensor:
         """
         chunks: [B, S, T, D]
         return: [B, S, H]
@@ -40,7 +40,7 @@ class EmbedChunkEncoder(nn.Module):
         b, s, t, d = chunks.shape
 
         x = chunks.reshape(b * s, t, d)
-        x = self.action_proj(x)  # [B*S, T, H]
+        x = de_action_head(x)  # [B*S, T, H]
 
         token = self.chunk_token.expand(b * s, 1, -1)
         x = torch.cat([token, x], dim=1)  # [B*S, T+1, H]

@@ -148,10 +148,6 @@ class FractalAction(nn.Module):
         de_action_head,
         cond_list: torch.Tensor = None,
         num_iter_list: Optional[list[int]] = None,
-        cfg: float = 1.0,
-        cfg_schedule: str = "constant",
-        temperature: float = 1.0,
-        filter_threshold: float = 0.0,
     ):
         """
         Generate samples recursively.
@@ -173,7 +169,6 @@ class FractalAction(nn.Module):
             next_level_sample_function = partial(
                 self.next_fractal.sample,
                 num_iter_list=num_iter_list,
-                cfg_schedule="constant",
             )
         else:
             next_level_sample_function = self.next_fractal.sample
@@ -186,10 +181,6 @@ class FractalAction(nn.Module):
             action_head=action_head,
             de_action_head=de_action_head,
             num_iter=num_iter,
-            cfg=cfg,
-            cfg_schedule=cfg_schedule,
-            temperature=temperature,
-            filter_threshold=filter_threshold,
             next_level_sample_fn=next_level_sample_function,
         )
     
@@ -202,10 +193,7 @@ class FractalAction(nn.Module):
         de_action_head,
         cond_list: torch.Tensor = None,
         num_iter_list: Optional[list[int]] = None,
-        cfg: float = 1.0,
-        cfg_schedule: str = "constant",
-        temperature: float = 1.0,
-        filter_threshold: float = 0.0,
+
     ):
         """
         Level-wise sampling.
@@ -241,10 +229,6 @@ class FractalAction(nn.Module):
             action_head=action_head,
             de_action_head=de_action_head,
             cond_list=cond_list,
-            cfg=cfg,
-            cfg_schedule=cfg_schedule,
-            temperature=temperature,
-            filter_threshold=filter_threshold,
         )
 
         batch_size, seq_len, hidden_dim = next_cond_seq.shape
@@ -264,10 +248,6 @@ class FractalAction(nn.Module):
                 de_action_head=de_action_head,
                 cond_list=next_cond_list,
                 num_iter_list=None,
-                cfg=cfg,
-                cfg_schedule=cfg_schedule,
-                temperature=temperature,
-                filter_threshold=filter_threshold,
             )
         else:
             # Leaf ActionHead.
@@ -278,10 +258,6 @@ class FractalAction(nn.Module):
                 action_head=action_head,
                 de_action_head=de_action_head,
                 cond_list=next_cond_list,
-                cfg=cfg,
-                cfg_schedule=cfg_schedule,
-                temperature=temperature,
-                filter_threshold=filter_threshold,
             )
 
         if child_actions.ndim == 2:

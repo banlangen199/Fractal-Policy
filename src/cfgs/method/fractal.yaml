@@ -18,13 +18,20 @@ method:
 
   # data / behavior
   use_lang_cond: false
-  action_order: FORWARD
+  action_order: reverse
   action_mode: ${env.action_mode}
-  action_padding: zero
+  action_padding: repeat
   action_sequence: ${method.action_window}
   action_window: ${method.actor_model.transformer_decoder.action_size_list.0}
   action_stride: 1
   mtp: false
+
+  coa_style_dataset: true
+  keyframe_only: false
+  full_traj_training: false
+  traj_sample_margin: 0
+  execute_threshold: 0.01
+
 
   # losses
   loss_type: l1
