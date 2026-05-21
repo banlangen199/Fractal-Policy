@@ -108,7 +108,9 @@ class ActorModel(nn.Module):
             norm=encoder_norm,
         )
 
-        self.state_proj = nn.Linear(state_dim, hidden_dim)
+        self.action2embed = nn.Linear(action_dim, hidden_dim)
+        self.embed2action = nn.Linear(hidden_dim, action_dim)
+
         self.state_mem_pos = nn.Parameter(torch.randn(1, 1, hidden_dim))
 
         self.transformer_decoder = transformer_decoder(
@@ -138,7 +140,7 @@ class ActorModel(nn.Module):
 
         if proprio.ndim == 3:
             proprio = proprio[:, 0, :]
-        state_token = self.state_proj(proprio).unsqueeze(0)
+        state_token = self.action2embed(proprio).unsqueeze(0)
 
         src = torch.cat([img_tokens, state_token], dim=0)
         mem_pos = torch.cat([img_pos_tokens, self.state_mem_pos.expand(1, bs, -1)], dim=0)
@@ -155,6 +157,7 @@ class ActorModel(nn.Module):
         proprio: torch.Tensor,
         task_embed: Optional[torch.Tensor] = None,
         actions: Optional[torch.Tensor] = None,
+        is_pad: Optional[torch.Tensor] = None,
         training: bool = True,
         sample_mode: str = "depth_first",
     ) -> torch.Tensor:
@@ -164,7 +167,11 @@ class ActorModel(nn.Module):
             actions,latent_losses = self.transformer_decoder(
                 memory=memory,
                 mem_pos=mem_pos,
+                proprio=proprio,
                 actions=actions,
+                is_pad=is_pad,
+                action_head=self.embed2action,
+                de_action_head=self.action2embed,
             )
         else: 
             # print("Sampling mode: ignoring provided actions and generating autoregressively.")
@@ -172,11 +179,17 @@ class ActorModel(nn.Module):
                 actions = self.transformer_decoder.sample(
                     memory=memory,
                     mem_pos=mem_pos,
+                    proprio=proprio,
+                    action_head=self.embed2action,
+                    de_action_head=self.action2embed,
                 )
             elif sample_mode == "levelwise":
                 actions = self.transformer_decoder.levelwise_sample(
                     memory=memory,
                     mem_pos=mem_pos,
+                    proprio=proprio,
+                    action_head=self.embed2action,
+                    de_action_head=self.action2embed,
                 )
             else:
                 raise ValueError(
@@ -299,6 +312,7 @@ class FractalPolicy(BaseMethod):
             proprio,
             task_emb,
             actions=a_gt,
+            is_pad=is_pad,
             training=training,
             sample_mode=sample_mode,
         )
@@ -308,6 +322,10 @@ class FractalPolicy(BaseMethod):
     def act(self, batch_input: dict[str, torch.Tensor],sample_mode:str="depth_first") -> BatchedActionSequence:
         self.training_mode(training=False)
         a_hat, _, _ , _ = self.forward(batch_input, training=False, sample_mode=sample_mode)
+
+        if self.action_order == "REVERSE":
+            a_hat = torch.flip(a_hat, dims=[1])
+
         return a_hat
 
     def validate(

@@ -39,8 +39,10 @@ class ActionHead(nn.Module):
         memory: torch.Tensor,
         mem_pos: Optional[torch.Tensor],
         cond_list: Any,
+        action_head,
+        de_action_head,
     ) -> Tuple[torch.Tensor, list[torch.Tensor]]:
-        pred = self.cond_to_action(cond_list[0])
+        pred = action_head(cond_list[0])
 
         return pred.view(actions.shape[0], actions.shape[1], self.action_dim), []
 
@@ -51,10 +53,6 @@ class ActionHead(nn.Module):
         next_level_sample_fn: Optional[Any] = None,
         cond_list: Any = None,
         num_iter: Optional[int] = None,
-        cfg: float = 1.0,
-        cfg_schedule: str = "constant",
-        temperature: float = 1.0,
-        filter_threshold: float = 0.0,
     ) -> torch.Tensor:
         # For sampling, we just do a single forward pass to get the action.
         return self.cond_to_action(cond_list[0])

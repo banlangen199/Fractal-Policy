@@ -25,6 +25,7 @@ class FractalAction(nn.Module):
         fractal_level: int = 0,
         latent_loss_type: str = "l1",
         memory_access_list: Optional[list[bool]] = None,
+        memory_dim: Optional[int] = 512,
         *args,
         **kwargs,
     ):
@@ -57,6 +58,7 @@ class FractalAction(nn.Module):
             dropout=dropout,
             latent_loss_type=latent_loss_type,
             use_memory=memory_access_list[self.fractal_level] if memory_access_list is not None else True,
+            memory_dim=memory_dim,
         )
 
         # Recursive next level, same pattern as fractalgen FractalGen.
@@ -73,6 +75,7 @@ class FractalAction(nn.Module):
                 fractal_level=self.fractal_level + 1,
                 latent_loss_type=latent_loss_type,
                 memory_access_list=memory_access_list,
+                memory_dim=memory_dim,
             )
         else:
             self.next_fractal = ActionHead(
@@ -86,6 +89,10 @@ class FractalAction(nn.Module):
         memory: torch.Tensor,
         mem_pos: Optional[torch.Tensor],
         actions: Optional[torch.Tensor],
+        proprio,
+        is_pad,
+        action_head,
+        de_action_head,
         cond_list: torch.Tensor = None,
     ):
         """
@@ -109,9 +116,20 @@ class FractalAction(nn.Module):
             cond_list=cond_list,
             memory=memory,
             mem_pos=mem_pos,
+            proprio=proprio,
+            is_pad=is_pad,
+            action_head=action_head,
+            de_action_head=de_action_head,
         )
 
-        pred_actions,child_loss=self.next_fractal(actions=actions, cond_list=next_cond_list, memory=memory, mem_pos=mem_pos)
+        pred_actions,child_loss=self.next_fractal(
+            actions=actions, 
+            cond_list=next_cond_list,                    
+            memory=memory, 
+            mem_pos=mem_pos,
+            action_head=action_head,
+            de_action_head=de_action_head,
+        )
         
 
         if pred_actions.ndim == 2:
@@ -125,6 +143,9 @@ class FractalAction(nn.Module):
         self,
         memory: torch.Tensor,
         mem_pos: Optional[torch.Tensor],
+        proprio,
+        action_head,
+        de_action_head,
         cond_list: torch.Tensor = None,
         num_iter_list: Optional[list[int]] = None,
         cfg: float = 1.0,
@@ -161,6 +182,9 @@ class FractalAction(nn.Module):
             cond_list=cond_list,
             memory=memory,
             mem_pos=mem_pos,
+            proprio=proprio,
+            action_head=action_head,
+            de_action_head=de_action_head,
             num_iter=num_iter,
             cfg=cfg,
             cfg_schedule=cfg_schedule,
@@ -173,6 +197,9 @@ class FractalAction(nn.Module):
         self,
         memory: torch.Tensor,
         mem_pos: Optional[torch.Tensor],
+        proprio,
+        action_head,
+        de_action_head,
         cond_list: torch.Tensor = None,
         num_iter_list: Optional[list[int]] = None,
         cfg: float = 1.0,
@@ -210,6 +237,9 @@ class FractalAction(nn.Module):
         next_cond_seq = self.generator.sample_cond_sequence(
             memory=memory,
             mem_pos=mem_pos,
+            proprio=proprio,
+            action_head=action_head,
+            de_action_head=de_action_head,
             cond_list=cond_list,
             cfg=cfg,
             cfg_schedule=cfg_schedule,
@@ -229,6 +259,9 @@ class FractalAction(nn.Module):
             child_actions = self.next_fractal.levelwise_sample(
                 memory=memory,
                 mem_pos=mem_pos,
+                proprio=proprio,
+                action_head=action_head,
+                de_action_head=de_action_head,
                 cond_list=next_cond_list,
                 num_iter_list=None,
                 cfg=cfg,
@@ -241,6 +274,9 @@ class FractalAction(nn.Module):
             child_actions = self.next_fractal.sample(
                 memory=memory,
                 mem_pos=mem_pos,
+                proprio=proprio,
+                action_head=action_head,
+                de_action_head=de_action_head,
                 cond_list=next_cond_list,
                 cfg=cfg,
                 cfg_schedule=cfg_schedule,

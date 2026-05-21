@@ -518,7 +518,10 @@ class RLBenchEnvFactory(EnvFactory):
             env = FrameStack(env, cfg.env.frame_stack)
 
             if cfg.temporal_ensemble:
-                if cfg.method_name == "coa":
+                if cfg.method_name == "coa" or (
+                    cfg.method_name == "fractal"
+                    and getattr(cfg.method, "coa_style_dataset", False)
+                ):
                     env = ReverseTemporalEnsemble(
                         env,
                         cfg.action_sequence,
@@ -548,7 +551,10 @@ class RLBenchEnvFactory(EnvFactory):
                         cfg.action_sequence,
                     )
                 else:
-                    if cfg.method_name == "coa":
+                    if cfg.method_name == "coa" or (
+                        cfg.method_name == "fractal"
+                        and getattr(cfg.method, "coa_style_dataset", False)
+                    ):
                         env = ReverseTemporalEnsemble(
                             env,
                             cfg.action_sequence,
@@ -665,7 +671,10 @@ class RLBenchEnvFactory(EnvFactory):
             )
 
         # Split each trajectory into a list of sub-trajectories according to the keyframe action.
-        if cfg.method_name == "coa":
+        if cfg.method_name == "coa" or (
+            cfg.method_name == "fractal"
+            and getattr(cfg.method, "coa_style_dataset", False)
+        ):
             demos = self._traj_split(raw_demos)
             action_sequence = self._update_action_sequence_length(cfg, demos)
         else:

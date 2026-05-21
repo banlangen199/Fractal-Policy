@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .action_encoder import EmbedChunkEncoder
 
 class KVCache(nn.Module):
     def __init__(self, max_batch_size: int, max_seq_length: int, n_head: int, head_dim: int):
@@ -210,6 +211,7 @@ class ARActionGenerator(nn.Module):
         action_dim: int = 8,
         latent_loss_type: str = "l1",
         use_memory: bool = True,
+        memory_dim: Optional[int] = 512,
     ):
         super().__init__()
         self.seq_len = seq_len
@@ -220,7 +222,15 @@ class ARActionGenerator(nn.Module):
         self.latent_loss_type = latent_loss_type
 
         self.cond_proj = nn.Linear(cond_dim, hidden_dim)
-        self.chunk_flat_proj = nn.Linear(sub_trunk_size * action_dim, hidden_dim)
+        self.chunk_proj = EmbedChunkEncoder(
+            action_dim=action_dim,
+            hidden_dim=hidden_dim,
+            max_chunk_len=sub_trunk_size,
+            num_layers=2,
+            num_heads=4,
+            dropout=dropout,
+        )
+
         self.pos_embed = nn.Parameter(torch.randn(1, seq_len + 1, hidden_dim) * 0.02)
         dim_feedforward = hidden_dim * 4
 
@@ -229,8 +239,8 @@ class ARActionGenerator(nn.Module):
         if self.use_memory:
             # encoder memory dim may be 512, while this layer hidden_dim may be
             # 1024 / 512 / 256 / 128. LazyLinear infers the input dim on first use.
-            self.memory_proj = nn.Linear(cond_dim, hidden_dim)
-            self.mem_pos_proj = nn.Linear(cond_dim, hidden_dim)
+            self.memory_proj = nn.Linear(memory_dim, hidden_dim)
+            self.mem_pos_proj = nn.Linear(memory_dim, hidden_dim)
         else:
             self.memory_proj = None
             self.mem_pos_proj = None
@@ -360,20 +370,20 @@ class ARActionGenerator(nn.Module):
                 raise ValueError(f"Condition dim mismatch: expected {self.cond_dim}, got {c.shape[1]}")
         return conds
 
-    def _chunk_to_feat(self, chunks: torch.Tensor) -> torch.Tensor:
-        # chunks: [B, seq_len, sub_trunk_size, D] -> [B, seq_len, H]
-        if chunks.shape[-1] != self.action_dim:
-            raise ValueError(
-                f"ARActionGenerator expects action_dim={self.action_dim}, got {chunks.shape[-1]}"
-            )
-        b, s, t, d = chunks.shape
-        if t != self.sub_trunk_size:
-            raise ValueError(
-                f"Chunk length mismatch: expected sub_trunk_size={self.sub_trunk_size}, got {t}"
-            )
-        flat = chunks.reshape(b * s, t * d)
-        feat = self.chunk_flat_proj(flat)
-        return feat.reshape(b, s, self.hidden_dim)
+    # def _chunk_to_feat(self, chunks: torch.Tensor) -> torch.Tensor:
+    #     # chunks: [B, seq_len, sub_trunk_size, D] -> [B, seq_len, H]
+    #     if chunks.shape[-1] != self.action_dim:
+    #         raise ValueError(
+    #             f"ARActionGenerator expects action_dim={self.action_dim}, got {chunks.shape[-1]}"
+    #         )
+    #     b, s, t, d = chunks.shape
+    #     if t != self.sub_trunk_size:
+    #         raise ValueError(
+    #             f"Chunk length mismatch: expected sub_trunk_size={self.sub_trunk_size}, got {t}"
+    #         )
+    #     chunk_embed = self.(chunks)
+    #     feat = self.chunk_proj(chunk_embed)
+    #     return feat.reshape(b, s, self.hidden_dim)
 
     def predict(
         self,
@@ -381,6 +391,7 @@ class ARActionGenerator(nn.Module):
         cond_list: Any,
         memory: torch.Tensor,
         mem_pos: Optional[torch.Tensor],
+        de_action_head,
         input_pos: Optional[int] = None,
     ) -> list[torch.Tensor]:
         if sub_chunks.shape[1] != self.seq_len:
@@ -389,6 +400,10 @@ class ARActionGenerator(nn.Module):
         # memory batch alignment and cond validation are done by caller (forward/sample)
         conds = cond_list
         cond_token = self.cond_proj(conds[0]).unsqueeze(1)
+
+        chunk_embed = de_action_head(sub_chunks)
+        feat = self.chunk_proj(chunk_embed)
+
         sub_chunks_feat = self._chunk_to_feat(sub_chunks)
         teacher_in = torch.cat([cond_token, sub_chunks_feat], dim=1)
 
@@ -415,6 +430,9 @@ class ARActionGenerator(nn.Module):
         actions: torch.Tensor,
         memory: torch.Tensor,
         mem_pos: Optional[torch.Tensor],
+        proprio,
+        action_head,
+        de_action_head,
         cond_list: Any = None,
     ) -> Tuple[torch.Tensor, Any, torch.Tensor]:
         """Training"""
@@ -438,6 +456,7 @@ class ARActionGenerator(nn.Module):
             cond_list=conds,
             memory=memory,
             mem_pos=mem_pos,
+            de_action_head=de_action_head,
         )
 
         #latent_loss
@@ -468,12 +487,11 @@ class ARActionGenerator(nn.Module):
         memory: torch.Tensor,
         mem_pos: Optional[torch.Tensor],
         next_level_sample_fn: Callable[..., Any],
+        proprio,
+        action_head,
+        de_action_head,
         cond_list: Any = None,
         num_iter: Optional[int] = None,
-        cfg: float = 1.0,
-        cfg_schedule: str = "constant",
-        temperature: float = 1.0,
-        filter_threshold: float = 0.0,
     ) :
         """inference"""
         if isinstance(cond_list, dict):
@@ -519,21 +537,17 @@ class ARActionGenerator(nn.Module):
                     cond_list=conds,
                     memory=memory,
                     mem_pos=mem_pos,
+                    de_action_head=de_action_head,
                     input_pos=step,
                 )
 
-                if cfg_schedule == "linear":
-                    cfg_iter = 1.0 + (cfg - 1.0) * float(step + 1) / float(self.seq_len)
-                else:
-                    cfg_iter = cfg
 
                 sampled_out = next_level_sample_fn(
                     memory=memory,
                     mem_pos=mem_pos,
                     cond_list=cond_list_next,
-                    cfg=cfg_iter,
-                    temperature=temperature,
-                    filter_threshold=filter_threshold,
+                    action_head=action_head,
+                    de_action_head=de_action_head,
                 )
                 sampled_chunk = sampled_out[0] if isinstance(sampled_out, tuple) else sampled_out
                 if sampled_chunk.ndim == 2:
@@ -553,10 +567,6 @@ class ARActionGenerator(nn.Module):
         memory: torch.Tensor,
         mem_pos: Optional[torch.Tensor],
         cond_list: Any = None,
-        cfg: float = 1.0,
-        cfg_schedule: str = "constant",
-        temperature: float = 1.0,
-        filter_threshold: float = 0.0,
     ) -> torch.Tensor:
         """
         Level-wise inference helper.
@@ -567,7 +577,6 @@ class ARActionGenerator(nn.Module):
         Return:
             cond_seq: [B, seq_len, hidden_dim]
         """
-        del cfg, cfg_schedule, temperature, filter_threshold
 
         # Infer batch size from cond_list first.
         if isinstance(cond_list, dict):

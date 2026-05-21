@@ -69,7 +69,7 @@ class RLBenchDataset(Dataset):
         self._action_seq_len_max = int(cfg_window) if cfg_window is not None else seq_len
         self._sliding_indices = None
         self.action_padding = cfg.method.action_padding
-        self.traj_sample_margin = cfg.method.traj_sample_margin if cfg.method_name == "coa" else None
+        self.traj_sample_margin = cfg.method.traj_sample_margin if cfg.method_name == "coa" or getattr(self.cfg.method, "coa_style_dataset", False) else None
         
         # Determine action order by enumeration and YAML config string
         self.action_order = ActionOrder[cfg.method.action_order]  # 例如 cfg.method.REVERSE 为 "REVERSE"
@@ -261,6 +261,7 @@ class RLBenchDataset(Dataset):
 
         return action_seq, is_pad
 
+
     def convert_to_mtp_actions(self, actions: np.array, is_pad: np.array) -> tuple(np.array, np.array):
         mtp_size = self.cfg.method.actor_model.nmtpheads
         l, d = actions.shape
@@ -328,7 +329,11 @@ class RLBenchDataset(Dataset):
 
         if self.cfg.method_name == "coa":
             return self.get_sample_coa(episode_idx)
-        elif self.cfg.method_name in ["act", "dp", "fractal"]:
+        elif self.cfg.method_name == "fractal":
+            if getattr(self.cfg.method, "coa_style_dataset", False):
+                return self.get_sample_fractal(episode_idx)
+            return self.get_sample(episode_idx)
+        elif self.cfg.method_name in ["act", "dp"]:
             return self.get_sample(episode_idx)
         else:
             raise ValueError(f"Unknown method name: {self.cfg.method_name}")
@@ -484,6 +489,82 @@ class RLBenchDataset(Dataset):
         
         return sample
 
+
+    def get_sample_fractal(self, episode_idx: int) -> dict:
+        """
+        Args:
+            episode_idx: Index of the current episode
+        
+        Returns:
+            sample: Sample dictionary containing observation, action sequence and related flags
+            
+            **Image observation fields** (CHW format, dtype=uint8):
+            - 'left_shoulder_rgb': (1, 3, 128, 128) - Left shoulder camera RGB image  
+            - 'right_shoulder_rgb': (1, 3, 128, 128) - Right shoulder camera RGB image
+            - 'wrist_rgb': (1, 3, 128, 128) - Wrist camera RGB image
+            - 'front_rgb': (1, 3, 128, 128) - Front camera RGB image
+            Format: (frame_stack, channels, height, width)
+            
+            **State fields** (dtype=float32):
+             - 'low_dim_state': (8,) - Robot low-dimensional state (e.g. gripper pose + gripper state)
+             
+             **Action-related fields** (MTP format, dtype=float32/bool):
+             - 'action': (l, nmtpheads, 8) - Action sequence in MTP format
+               * l: action_sequence_length (determined by config and trajectory length)
+               * nmtpheads (number of multi-head predictions)  
+               * 8: action_dim (3 position + 4 orientation + 1 gripper)
+             - 'is_pad': (l, nmtpheads) - Padding flags, bool type
+               * True indicates this position is padded, False indicates valid action
+            
+            **Language condition fields** (only when use_lang_cond=True):
+            - 'desc': (77,) - CLIP tokenized text description
+            
+            **Key Features**:
+            1. MTP conversion: convert_to_mtp_actions() transforms regular action sequences to multi-head prediction format
+               Each timestep predicts future nmtpheads action steps
+            2. Action Order: Supports REVERSE/FORWARD/HYBRID three arrangement modes
+            3. Padding handling: Uses zero padding for sequences with insufficient length
+            4. Data types: Images are uint8, other numerical values are float32
+            5. Image format: CHW format (Channels, Height, Width), suitable for PyTorch CNN input
+        """
+
+        episode = self._demos[episode_idx]
+
+        actions = episode[ActionModeType[self.cfg.env.action_mode].value]
+        ep_len = len(actions) 
+
+        # Determine the sampling idx according to config
+        min_idx, max_idx = 0, ep_len - 1
+        if self.cfg.method.keyframe_only:
+            idx = max_idx
+        elif self.cfg.debug:
+            idx = 0
+        else:
+            idx = np.random.randint(min_idx, max_idx - self.traj_sample_margin)
+        
+        # Get observation sample according to the idx, used for all keys except for action
+        sample = self.get_observation(episode, idx)
+
+        # Get action sequence according to the idx
+        action_seq, is_pad = self.get_action_coa(actions, max_idx, idx)
+
+
+        sample['action'] = action_seq
+        sample['is_pad'] = is_pad
+        
+        # Squeeze desc dimension (assuming desc is part of observation)
+        if self.cfg.method.use_lang_cond:
+            sample['desc'] = sample['desc'].squeeze(0) 
+        
+        # Remove original action as it's only used for action generation
+        del sample[ActionModeType[self.cfg.env.action_mode].value]
+        
+        #convert
+        sample = self.convert_dtype(sample)
+
+
+        
+        return sample
 
 
 @hydra.main(config_path="../cfgs/", config_name="launch_act", version_base=None)

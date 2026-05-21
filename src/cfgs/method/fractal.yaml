@@ -48,6 +48,7 @@ method:
       generator_type_list: [ar, ar, ar, ar]
 
       memory_access_list: [true, false, false, false]
+      memory_dim: 512
 
     hidden_dim: 512
     enc_layers: 4
