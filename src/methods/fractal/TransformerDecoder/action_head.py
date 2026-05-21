@@ -50,11 +50,13 @@ class ActionHead(nn.Module):
         self,
         memory: torch.Tensor,
         mem_pos: Optional[torch.Tensor],
+        action_head,
+        de_action_head,
         next_level_sample_fn: Optional[Any] = None,
         cond_list: Any = None,
         num_iter: Optional[int] = None,
     ) -> torch.Tensor:
         # For sampling, we just do a single forward pass to get the action.
-        return self.cond_to_action(cond_list[0])
+        return action_head(cond_list[0])
 
 
