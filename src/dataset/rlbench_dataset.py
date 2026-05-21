@@ -69,7 +69,7 @@ class RLBenchDataset(Dataset):
         self._action_seq_len_max = int(cfg_window) if cfg_window is not None else seq_len
         self._sliding_indices = None
         self.action_padding = cfg.method.action_padding
-        self.traj_sample_margin = cfg.method.traj_sample_margin if cfg.method_name == "coa" or getattr(self.cfg.method, "coa_style_dataset", False) else None
+        self.traj_sample_margin = cfg.method.traj_sample_margin if cfg.method_name == "coa" or getattr(cfg.method, "coa_style_dataset", False) else None
         
         # Determine action order by enumeration and YAML config string
         self.action_order = ActionOrder[cfg.method.action_order]  # 例如 cfg.method.REVERSE 为 "REVERSE"
@@ -228,11 +228,15 @@ class RLBenchDataset(Dataset):
         action_seq = actions[action_idxs]
         
         # Build padding and stop flags
+        if len(action_seq) > self._action_seq_len_max:
+            raise ValueError(
+                f"CoA segment length {len(action_seq)} exceeds action window "
+                f"{self._action_seq_len_max}. Increase action_size_list[0] or use dynamic action_sequence."
+            )
         is_pad = np.array([False] * len(action_idxs) + [True] * (self._action_seq_len_max - len(action_idxs)))
 
         
         # Pad insufficient part
-        assert self.action_padding == 'zero', f"Unknown act_padding type: {self.action_padding}"
         num_action_to_pad = self._action_seq_len_max - len(action_seq)
         if self.action_padding == 'repeat':
             action_padding = action_seq[0:1, ...].repeat(num_action_to_pad, axis=0)

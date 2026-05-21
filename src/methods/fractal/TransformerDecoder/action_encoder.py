@@ -19,6 +19,8 @@ class ChunkEncoder(nn.Module):
 
         self.pos_emb = nn.Parameter(torch.randn(1, max_chunk_len + 1, hidden_dim) * 0.02)
         self.chunk_token = nn.Parameter(torch.randn(1, 1, hidden_dim) * 0.02)
+        
+        self.action_proj = nn.Linear(action_dim, hidden_dim)
 
         layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -40,7 +42,7 @@ class ChunkEncoder(nn.Module):
         b, s, t, d = chunks.shape
 
         x = chunks.reshape(b * s, t, d)
-        x = de_action_head(x)  # [B*S, T, H]
+        x = self.action_proj(x)  # [B*S, T, H]
 
         token = self.chunk_token.expand(b * s, 1, -1)
         x = torch.cat([token, x], dim=1)  # [B*S, T+1, H]

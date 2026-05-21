@@ -428,6 +428,7 @@ class ARActionGenerator(nn.Module):
         actions: torch.Tensor,
         memory: torch.Tensor,
         mem_pos: Optional[torch.Tensor],
+        is_pad,
         proprio,
         action_head,
         de_action_head,
@@ -458,7 +459,7 @@ class ARActionGenerator(nn.Module):
         )
 
         #latent_loss
-        sub_chunks_feat = self._chunk_to_feat(sub_chunks)
+        sub_chunks_feat = self.chunk_proj(de_action_head=de_action_head, chunks=sub_chunks)
         target=sub_chunks_feat.detach()
 
         loss_type=self.latent_loss_type

@@ -18,7 +18,7 @@ method:
 
   # data / behavior
   use_lang_cond: false
-  action_order: reverse
+  action_order: REVERSE
   action_mode: ${env.action_mode}
   action_padding: repeat
   action_sequence: ${method.action_window}
@@ -48,7 +48,7 @@ method:
       action_dim: ${method.actor_model.action_dim}
 
       # Fractal hierarchy ( coarse-> fine)
-      action_size_list: [64, 32, 8, 1]
+      action_size_list: [128, 32, 8, 1]
       hidden_dim_list: [512, 256, 256, 128]
       num_blocks_list: [6, 4, 4, 4]
       num_heads_list: [8, 8, 8, 8]

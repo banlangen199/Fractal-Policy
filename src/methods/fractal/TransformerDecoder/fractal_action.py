@@ -127,6 +127,8 @@ class FractalAction(nn.Module):
             cond_list=next_cond_list,                    
             memory=memory, 
             mem_pos=mem_pos,
+            proprio=proprio,
+            is_pad=is_pad,
             action_head=action_head,
             de_action_head=de_action_head,
         )
@@ -153,8 +155,9 @@ class FractalAction(nn.Module):
         Generate samples recursively.
         """
 
-        if num_iter_list is None:
-            num_iter_list = [64,16,1]
+        # if num_iter_list is None:
+        #     num_iter_list = [64,16,1]
+
         if self.fractal_level < len(num_iter_list):
             num_iter = int(num_iter_list[self.fractal_level])
         else:
